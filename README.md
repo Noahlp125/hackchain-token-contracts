@@ -17,6 +17,7 @@ Token logic is split into 11 independent contracts for security, auditability an
 | EducatorBonuses.sol | 20,21,22,24 |
 | RecruiterBonuses.sol | 27,28,29 |
 | TalentBonuses.sol | 4,11,23 |
+| ComissionSystem.sol | 8 |
 
 ## Access Control
 All reward/penalty contracts use OpenZeppelin AccessControl. Roles are granted to contracts (not external wallets) where possible to minimize trust assumptions.
