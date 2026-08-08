@@ -150,7 +150,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * User must approve this contract to spend their tokens first.
      */
     function activateAdvancedMembership() external nonReentrant {
-        if (advancedMemberships[msg.sender].active) revert MembershipAlreadyActive();
+        if (_isAdvancedActive(msg.sender)) revert MembershipAlreadyActive();
 
         // Transfer tokens from user to this contract
         bool success = hackToken.transferFrom(
@@ -190,7 +190,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      */
     function cancelAdvancedMembership() external nonReentrant {
         AdvancedMembership storage membership = advancedMemberships[msg.sender];
-        if (!membership.active) revert MembershipNotActive();
+        if (!_isAdvancedActive(msg.sender)) revert MembershipNotActive();
 
         // Apply cancellation penalty
         bool success = hackToken.transferFrom(
@@ -345,8 +345,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * @notice Check if a user has an active advanced membership.
      */
     function hasAdvancedMembership(address user_) external view returns (bool) {
-        AdvancedMembership memory m = advancedMemberships[user_];
-        return m.active && m.expiresAt > block.timestamp;
+        return _isAdvancedActive(user_);
     }
 
     /**
@@ -379,6 +378,15 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         if (tier_ == AcademicTier.Annual) return (ACADEMIC_ANNUAL_COST, ACADEMIC_ANNUAL_DURATION);
         revert InvalidTier();
     }
+    /**
+ * @dev Fuente de verdad única para saber si una membresía avanzada está
+ * realmente activa (activa Y no expirada). Evita el desajuste entre
+ * el booleano `active` y `expiresAt` señalado en L-03.
+ */
+    function _isAdvancedActive(address user_) internal view returns (bool) {
+        AdvancedMembership storage m = advancedMemberships[user_];
+        return m.active && m.expiresAt > block.timestamp;
+}
 
     // --- Admin ---
 
