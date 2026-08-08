@@ -56,6 +56,9 @@ contract StakingContract is AccessControl, ReentrancyGuard {
     /// @notice Recompensas acumuladas pendientes de reclamar por usuario.
     mapping(address => uint256) public pendingRewards;
 
+    /// @notice indice de la posicion que respalda el beneficio no-commission activo
+    mapping(address => uint256) public noCommissionStakeIndex;
+
     // --- Custom Errors ---
     error InvalidAddress();
     error AmountTooLow();
@@ -68,6 +71,8 @@ contract StakingContract is AccessControl, ReentrancyGuard {
     error NoCommissionAlreadyActive();
     error NoCommissionNotActive();
     error NoPendingRewards();
+    error IneligibleStakeForNoCommission();
+    error NoCommissionStakeNotMature();
 
     // --- Events ---
     event Staked(address indexed user, uint256 amount, uint256 duration, uint256 stakeIndex);
@@ -170,10 +175,24 @@ contract StakingContract is AccessControl, ReentrancyGuard {
 
     // --- Mechanism 6: No-commission benefit ---
 
-    function activateNoCommission() external {
+    /**
+     * @notice Activa el beneficio no-commission usando una posicion
+     * concreta, activa, con monto suficiente, duracion ONE_YEAR y que
+     * ya haya madurado (M-02 fix: antes no exigia block.timestamp >=
+     * startTime + duration).
+     * @param stakeIndex_ Indice de la posicion en userStakes[msg.sender].
+     */
+    function activateNoCommission(uint256 stakeIndex_) external {
         if (noCommissionActive[msg.sender]) revert NoCommissionAlreadyActive();
-        if (!_isEligibleForNoCommission(msg.sender)) revert NoCommissionNotEligible();
+        if (stakeIndex_ >= userStakes[msg.sender].length) revert StakeNotFound();
 
+        Stake storage s = userStakes[msg.sender][stakeIndex_];
+
+        if (!s.active || s.amount < NO_COMMISSION_THRESHOLD) revert IneligibleStakeForNoCommission();
+        if (s.duration < ONE_YEAR) revert IneligibleStakeForNoCommission();
+        if (block.timestamp < s.startTime + s.duration) revert NoCommissionStakeNotMature();
+
+        noCommissionStakeIndex[msg.sender] = stakeIndex_;
         noCommissionActive[msg.sender] = true;
         emit NoCommissionActivated(msg.sender);
     }
@@ -190,8 +209,21 @@ contract StakingContract is AccessControl, ReentrancyGuard {
         return userStakes[user_];
     }
 
+    /**
+     * @notice Devuelve si el usuario tiene el beneficio no-commission
+     * activo de verdad: la bandera esta activa Y la posicion que la
+     * respalda sigue activa y por encima del umbral (M-02 fix — evita
+     * que el beneficio quede "stale" si esa posicion se retira mientras
+     * otra menor sigue abierta).
+     */
     function hasNoCommission(address user_) external view returns (bool) {
-        return noCommissionActive[user_];
+        if (!noCommissionActive[user_]) return false;
+
+        uint256 idx = noCommissionStakeIndex[user_];
+        if (idx >= userStakes[user_].length) return false;
+
+        Stake storage s = userStakes[user_][idx];
+        return s.active && s.amount >= NO_COMMISSION_THRESHOLD && s.duration >= ONE_YEAR;
     }
 
     function getTotalStaked(address user_) external view returns (uint256) {
@@ -199,20 +231,6 @@ contract StakingContract is AccessControl, ReentrancyGuard {
     }
 
     // --- Internal ---
-
-    function _isEligibleForNoCommission(address user_) internal view returns (bool) {
-        Stake[] memory stakes = userStakes[user_];
-        for (uint256 i = 0; i < stakes.length; i++) {
-            if (
-                stakes[i].active &&
-                stakes[i].amount >= NO_COMMISSION_THRESHOLD &&
-                stakes[i].duration == ONE_YEAR
-            ) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     // --- Admin ---
 
