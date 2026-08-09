@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title StakingContract
@@ -16,10 +17,11 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
  * recompensa se acumula como deuda (pendingRewards) y se reclama aparte
  * con claimRewards(), que puede reintentarse cuando el pool tenga liquidez.
  */
-contract StakingContract is AccessControl, ReentrancyGuard {
+contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
 
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
 
     // --- Staking periods ---
     uint256 public constant ONE_MONTH = 30 days;
@@ -92,11 +94,12 @@ contract StakingContract is AccessControl, ReentrancyGuard {
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(EMERGENCY_ROLE, msg.sender);
     }
 
     // --- Staking ---
 
-    function stake(uint256 amount_, uint256 duration_) external nonReentrant {
+    function stake(uint256 amount_, uint256 duration_) external nonReentrant whenNotPaused {
         if (duration_ != ONE_MONTH && duration_ != ONE_YEAR) revert InvalidDuration();
 
         if (duration_ == ONE_MONTH && amount_ < MIN_STAKE_ONE_MONTH) revert AmountTooLow();
@@ -237,6 +240,23 @@ contract StakingContract is AccessControl, ReentrancyGuard {
     function setIncentivesPool(address newPool_) external onlyRole(ADMIN_ROLE) {
         if (newPool_ == address(0)) revert InvalidAddress();
         incentivesPool = newPool_;
+    }
+
+    /**
+     * @notice Pausa las nuevas entradas de staking (stake()).
+     * @dev L-06 fix: a diferencia de pausar HackToken entero,
+     * withdrawPrincipal() y claimRewards() siguen funcionando siempre,
+     * incluso con el contrato pausado. Solo bloquea nuevas posiciones.
+     */
+    function pauseEntrances() external onlyRole(EMERGENCY_ROLE) {
+        _pause();
+    }
+
+    /**
+     * @notice Reanuda las nuevas entradas de staking.
+     */
+    function unpauseEntrances() external onlyRole(EMERGENCY_ROLE) {
+        _unpause();
     }
 }
 
