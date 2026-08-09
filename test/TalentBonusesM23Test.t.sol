@@ -158,6 +158,41 @@ contract TalentBonusesM23Test is Test {
         assertEq(token.balanceOf(EDUCATOR) - balanceBefore, 600 ether, "partial refund mismatch");
     }
 
+    /// @dev L-04: un lote mayor a MAX_BATCH debe rechazarse antes de
+    /// intentar ejecutar el bucle, evitando quedarse sin gas a mitad.
+    function test_L04_RevertsBatchAboveMaximum() public {
+        vm.prank(EDUCATOR);
+        bonuses.fundProject(PROJECT_ID, 100_000 ether);
+
+        uint256 batchSize = bonuses.MAX_BATCH() + 1;
+        address[] memory talents = new address[](batchSize);
+        uint256[] memory amounts = new uint256[](batchSize);
+        for (uint256 i = 0; i < batchSize; i++) {
+            talents[i] = address(uint160(i + 1000));
+            amounts[i] = 1;
+        }
+
+        vm.expectRevert(TalentBonuses.BatchTooLarge.selector);
+        bonuses.distributeToTalents(PROJECT_ID, talents, amounts);
+    }
+
+    function test_L04_AllowsBatchAtExactMaximum() public {
+        vm.prank(EDUCATOR);
+        bonuses.fundProject(PROJECT_ID, 100_000 ether);
+
+        uint256 batchSize = bonuses.MAX_BATCH();
+        address[] memory talents = new address[](batchSize);
+        uint256[] memory amounts = new uint256[](batchSize);
+        for (uint256 i = 0; i < batchSize; i++) {
+            talents[i] = address(uint160(i + 1000));
+            amounts[i] = 1 ether;
+        }
+
+        bonuses.distributeToTalents(PROJECT_ID, talents, amounts);
+
+        assertEq(token.balanceOf(talents[0]), 1 ether, "first talent in max batch not paid");
+    }
+
     function test_RevertsFundingAfterWindowClosed() public {
         vm.prank(EDUCATOR);
         bonuses.fundProject(PROJECT_ID, 1_000 ether);

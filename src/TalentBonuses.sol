@@ -35,6 +35,7 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
 
     /// @notice Plazo de financiacion de un proyecto tras su primera aportacion.
     uint256 public constant FUNDING_WINDOW = 90 days;
+    uint256 public constant MAX_BATCH = 50;
 
     // --- State ---
     IERC20 public immutable hackToken;
@@ -79,6 +80,7 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
     error NothingToRefund();
     error AlreadyRefunded();
     error TalentCannotBeSponsor();
+    error BatchTooLarge();
 
     // --- Events ---
     event SchoolingDegreeRewarded(address indexed user, bytes32 degreeId, uint256 amount);
@@ -194,6 +196,7 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
         uint256[] calldata amounts_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (talents_.length == 0) revert EmptyTalentsList();
+        if (talents_.length > MAX_BATCH) revert BatchTooLarge();
         require(talents_.length == amounts_.length, "Arrays length mismatch");
         if (projectFundedAmount[projectId_] == 0) revert ProjectNotFunded();
 
