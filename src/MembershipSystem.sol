@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title MembershipSystem
@@ -13,6 +14,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * Payments are split between IncentivesPool and Treasury.
  */
 contract MembershipSystem is AccessControl, ReentrancyGuard {
+    using SafeERC20 for IERC20;
 
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -165,12 +167,12 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         uint256 treasuryAmount = ADVANCED_MEMBERSHIP_COST * TREASURY_SHARE / 100;
 
         // Send to IncentivesPool
-        hackToken.transfer(incentivesPool, poolAmount);
+        hackToken.safeTransfer(incentivesPool, poolAmount);
         // Notify pool of deposit
         IIncentivesPool(incentivesPool).deposit(poolAmount, "advanced_membership_fee");
 
         // Send to Treasury
-        hackToken.transfer(treasury, treasuryAmount);
+        hackToken.safeTransfer(treasury, treasuryAmount);
 
         // Register membership
         uint256 expiresAt = block.timestamp + ADVANCED_MEMBERSHIP_DURATION;
@@ -201,7 +203,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         if (!success) revert TransferFailed();
 
         // Send penalty to IncentivesPool
-        hackToken.transfer(incentivesPool, ADVANCED_CANCELLATION_PENALTY);
+        hackToken.safeTransfer(incentivesPool, ADVANCED_CANCELLATION_PENALTY);
         IIncentivesPool(incentivesPool).deposit(
             ADVANCED_CANCELLATION_PENALTY,
             "advanced_membership_cancellation_penalty"
@@ -230,9 +232,9 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         uint256 poolAmount = ADVANCED_MEMBERSHIP_COST * POOL_SHARE / 100;
         uint256 treasuryAmount = ADVANCED_MEMBERSHIP_COST * TREASURY_SHARE / 100;
 
-        hackToken.transfer(incentivesPool, poolAmount);
+        hackToken.safeTransfer(incentivesPool, poolAmount);
         IIncentivesPool(incentivesPool).deposit(poolAmount, "advanced_membership_renewal");
-        hackToken.transfer(treasury, treasuryAmount);
+        hackToken.safeTransfer(treasury, treasuryAmount);
 
         // Extend from now if expired, from current expiry if still active
         AdvancedMembership storage membership = advancedMemberships[msg.sender];
@@ -272,7 +274,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         uint256 treasuryAmount = cost * TREASURY_SHARE / 100;
         uint256 educatorAmount = cost * POOL_SHARE / 100;
 
-        hackToken.transfer(treasury, treasuryAmount);
+        hackToken.safeTransfer(treasury, treasuryAmount);
 
         // Accumulate educator pool for proportional distribution
         pendingEducatorPool += educatorAmount;
@@ -333,8 +335,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         ev.views = 0;
         pendingEducatorPool -= reward;
 
-        bool success = hackToken.transfer(msg.sender, reward);
-        if (!success) revert TransferFailed();
+        hackToken.safeTransfer(msg.sender, reward);
 
         emit EducatorRewardsDistributed(msg.sender, reward);
     }
