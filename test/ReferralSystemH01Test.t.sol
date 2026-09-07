@@ -6,12 +6,14 @@ import { ReferralSystem } from "../src/ReferralSystem.sol";
 import { StakingContract } from "../src/StakingContract.sol";
 import { IncentivesPool } from "../src/IncentivesPool.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
+import { RoleRegistry } from "../src/RoleRegistry.sol";
 
 contract ReferralSystemH01Test is Test {
     ReferralSystem referral;
     StakingContract staking;
     IncentivesPool pool;
     HackToken token;
+    RoleRegistry registry;
 
     address REFERRER = makeAddr("referrer");
     address REFERRED = makeAddr("referred");
@@ -19,7 +21,8 @@ contract ReferralSystemH01Test is Test {
     function setUp() public {
         token = new HackToken();
         pool = new IncentivesPool(address(token));
-        staking = new StakingContract(address(token), address(pool));
+        registry = new RoleRegistry();
+        staking = new StakingContract(address(token), address(pool), address(registry));
         referral = new ReferralSystem(address(pool), address(staking));
 
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(referral));

@@ -16,6 +16,13 @@ import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
  * ha vencido, independientemente del estado de IncentivesPool. La
  * recompensa se acumula como deuda (pendingRewards) y se reclama aparte
  * con claimRewards(), que puede reintentarse cuando el pool tenga liquidez.
+ *
+ * HC-SRC-002 fix: stake(), claimRewards() y activateNoCommission()
+ * consultan RoleRegistry.isBlocked() antes de ejecutar — un perfil
+ * bloqueado no puede abrir posiciones nuevas ni reclamar incentivos.
+ * withdrawPrincipal() y deactivateNoCommission() quedan exentos a
+ * propósito: un usuario bloqueado debe poder recuperar fondos propios y
+ * renunciar a un beneficio en cualquier momento.
  */
 contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
 
@@ -50,6 +57,7 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
     // --- State ---
     IERC20 public immutable hackToken;
     address public incentivesPool;
+    IRoleRegistry public roleRegistry;
 
     mapping(address => Stake[]) public userStakes;
     mapping(address => uint256) public totalStakedByUser;
@@ -75,6 +83,7 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
     error NoPendingRewards();
     error IneligibleStakeForNoCommission();
     error NoCommissionStakeNotMature();
+    error ProfileBlocked();
 
     // --- Events ---
     event Staked(address indexed user, uint256 amount, uint256 duration, uint256 stakeIndex);
@@ -85,12 +94,14 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
     event NoCommissionDeactivated(address indexed user);
 
     // --- Constructor ---
-    constructor(address hackToken_, address incentivesPool_) {
+    constructor(address hackToken_, address incentivesPool_, address roleRegistry_) {
         if (hackToken_ == address(0)) revert InvalidAddress();
         if (incentivesPool_ == address(0)) revert InvalidAddress();
+        if (roleRegistry_ == address(0)) revert InvalidAddress();
 
         hackToken = IERC20(hackToken_);
         incentivesPool = incentivesPool_;
+        roleRegistry = IRoleRegistry(roleRegistry_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
@@ -100,6 +111,7 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
     // --- Staking ---
 
     function stake(uint256 amount_, uint256 duration_) external nonReentrant whenNotPaused {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (duration_ != ONE_MONTH && duration_ != ONE_YEAR) revert InvalidDuration();
 
         if (duration_ == ONE_MONTH && amount_ < MIN_STAKE_ONE_MONTH) revert AmountTooLow();
@@ -166,6 +178,8 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
      * en el momento del intento — la deuda permanece registrada.
      */
     function claimRewards() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+
         uint256 amount = pendingRewards[msg.sender];
         if (amount == 0) revert NoPendingRewards();
 
@@ -186,6 +200,7 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
      * @param stakeIndex_ Indice de la posicion en userStakes[msg.sender].
      */
     function activateNoCommission(uint256 stakeIndex_) external {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (noCommissionActive[msg.sender]) revert NoCommissionAlreadyActive();
         if (stakeIndex_ >= userStakes[msg.sender].length) revert StakeNotFound();
 
@@ -242,6 +257,11 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
         incentivesPool = newPool_;
     }
 
+    function setRoleRegistry(address newRegistry_) external onlyRole(ADMIN_ROLE) {
+        if (newRegistry_ == address(0)) revert InvalidAddress();
+        roleRegistry = IRoleRegistry(newRegistry_);
+    }
+
     /**
      * @notice Pausa las nuevas entradas de staking (stake()).
      * @dev L-06 fix: a diferencia de pausar HackToken entero,
@@ -263,4 +283,8 @@ contract StakingContract is AccessControl, ReentrancyGuard, Pausable {
 // --- Interface ---
 interface IIncentivesPool {
     function distribute(address to_, uint256 amount_, string calldata reason_) external;
+}
+
+interface IRoleRegistry {
+    function isBlocked(address account_) external view returns (bool);
 }
