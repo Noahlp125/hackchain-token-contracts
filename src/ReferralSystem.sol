@@ -2,7 +2,9 @@
 pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title ReferralSystem
@@ -16,9 +18,14 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * DESPUÉS de que el referral fuera registrado — evitando que alguien
  * stakee primero y reclame un referido retroactivamente en el mismo
  * bloque.
+ *
+ * HC-SRC-002 fix: registerReferral() se bloquea por quien llama (el
+ * referido). validateReferral() se bloquea por el REFERRER, no por quien
+ * ejecuta la llamada, es el referrer quien cobra el incentivo, así que
+ * es su estado el que importa, no el del referido que dispara la
+ * transacción.
  */
 contract ReferralSystem is AccessControl, ReentrancyGuard {
-
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
@@ -39,6 +46,7 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
     // --- State ---
     address public incentivesPool;
     address public stakingContract;
+    IRoleRegistry public roleRegistry;
 
     mapping(address => ReferralInfo) public referralInfo;
     mapping(address => address) public referredBy;
@@ -58,18 +66,29 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
     error IneligibleStake();
     error StakeNotMature();
     error ReferralRegisteredTooLate();
+    error ProfileBlocked();
 
     // --- Events ---
     event UserReferred(address indexed referrer, address indexed referred);
-    event ReferralValidated(address indexed referrer, address indexed referred, uint256 reward);
+    event ReferralValidated(
+        address indexed referrer,
+        address indexed referred,
+        uint256 reward
+    );
 
     // --- Constructor ---
-    constructor(address incentivesPool_, address stakingContract_) {
+    constructor(
+        address incentivesPool_,
+        address stakingContract_,
+        address roleRegistry_
+    ) {
         if (incentivesPool_ == address(0)) revert InvalidAddress();
         if (stakingContract_ == address(0)) revert InvalidAddress();
+        if (roleRegistry_ == address(0)) revert InvalidAddress();
 
         incentivesPool = incentivesPool_;
         stakingContract = stakingContract_;
+        roleRegistry = IRoleRegistry(roleRegistry_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
@@ -83,6 +102,7 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
      * validar el referral — validateReferral() lo exige.
      */
     function registerReferral(address referrer_) external {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (referrer_ == address(0)) revert InvalidAddress();
         if (referrer_ == msg.sender) revert CannotReferYourself();
         if (referredBy[msg.sender] != address(0)) revert AlreadyReferred();
@@ -105,6 +125,9 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
 
         if (referrer == address(0)) revert NotReferred();
         if (referralValidated[referred]) revert ReferralAlreadyValidated();
+        // Se comprueba el bloqueo del referrer, no el de quien llama: es
+        // el referrer quien cobra el incentivo (HC-SRC-002).
+        if (roleRegistry.isBlocked(referrer)) revert ProfileBlocked();
 
         (
             uint256 amount,
@@ -114,9 +137,11 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
             bool active
         ) = IStakingContract(stakingContract).userStakes(referred, stakeIndex_);
 
-        if (!active || amount < MIN_STAKE_FOR_REFERRAL) revert IneligibleStake();
+        if (!active || amount < MIN_STAKE_FOR_REFERRAL)
+            revert IneligibleStake();
         if (duration < ONE_MONTH) revert IneligibleStake();
-        if (referralRegisteredAt[referred] > startTime) revert ReferralRegisteredTooLate();
+        if (referralRegisteredAt[referred] > startTime)
+            revert ReferralRegisteredTooLate();
         if (block.timestamp < startTime + duration) revert StakeNotMature();
 
         ReferralInfo storage info = referralInfo[referrer];
@@ -127,7 +152,8 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
             info.referralsThisMonth = 0;
         }
 
-        if (info.referralsThisMonth >= MAX_REFERRALS_PER_MONTH) revert MonthlyLimitReached();
+        if (info.referralsThisMonth >= MAX_REFERRALS_PER_MONTH)
+            revert MonthlyLimitReached();
 
         // Mark as validated before external call (CEI pattern)
         referralValidated[referred] = true;
@@ -146,7 +172,9 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
 
     // --- Views ---
 
-    function getReferralInfo(address user_) external view returns (ReferralInfo memory) {
+    function getReferralInfo(
+        address user_
+    ) external view returns (ReferralInfo memory) {
         return referralInfo[user_];
     }
 
@@ -174,21 +202,41 @@ contract ReferralSystem is AccessControl, ReentrancyGuard {
         incentivesPool = newPool_;
     }
 
-    function setStakingContract(address newStaking_) external onlyRole(ADMIN_ROLE) {
+    function setStakingContract(
+        address newStaking_
+    ) external onlyRole(ADMIN_ROLE) {
         if (newStaking_ == address(0)) revert InvalidAddress();
         stakingContract = newStaking_;
+    }
+
+    function setRoleRegistry(
+        address newRegistry_
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newRegistry_ == address(0)) revert InvalidAddress();
+        roleRegistry = IRoleRegistry(newRegistry_);
     }
 }
 
 // --- Interfaces ---
 interface IIncentivesPool {
-    function distribute(address to_, uint256 amount_, string calldata reason_) external;
+    function distribute(
+        address to_,
+        uint256 amount_,
+        string calldata reason_
+    ) external;
+}
+
+interface IRoleRegistry {
+    function isBlocked(address account_) external view returns (bool);
 }
 
 interface IStakingContract {
     /// @dev Coincide con el getter público auto-generado por el mapping
     /// userStakes en StakingContract.sol (struct Stake desempaquetada).
-    function userStakes(address user_, uint256 index_)
+    function userStakes(
+        address user_,
+        uint256 index_
+    )
         external
         view
         returns (

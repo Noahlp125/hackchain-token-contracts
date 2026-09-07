@@ -23,7 +23,7 @@ contract ReferralSystemH01Test is Test {
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         staking = new StakingContract(address(token), address(pool), address(registry));
-        referral = new ReferralSystem(address(pool), address(staking));
+        referral = new ReferralSystem(address(pool), address(staking), address(registry));
 
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(referral));
 
