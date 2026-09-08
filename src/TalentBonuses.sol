@@ -2,7 +2,9 @@
 pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
@@ -18,9 +20,14 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  *   distribuir, cada sponsor puede recuperar su parte no distribuida.
  * - distributeToTalents() rechaza que cualquier sponsor del proyecto
  *   figure como talento receptor (evita auto-pago).
+ *
+ * HC-SRC-002 fix: fundProject() consulta RoleRegistry.isBlocked(), un
+ * perfil bloqueado no puede financiar proyectos nuevos. refundContribution()
+ * y distributeToTalents() quedan fuera de este guard: el primero es
+ * recuperar fondos propios, el segundo es un pago del enforcer que se
+ * revisara aparte.
  */
 contract TalentBonuses is AccessControl, ReentrancyGuard {
-
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant ENFORCER_ROLE = keccak256("ENFORCER_ROLE");
@@ -81,16 +88,41 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
     error AlreadyRefunded();
     error TalentCannotBeSponsor();
     error BatchTooLarge();
+    error ProfileBlocked();
 
     // --- Events ---
-    event SchoolingDegreeRewarded(address indexed user, bytes32 degreeId, uint256 amount);
-    event TalentHiredRewarded(address indexed talent, uint256 month, uint256 amount);
-    event ProjectFunded(bytes32 indexed projectId, address indexed sponsor, uint256 amount);
-    event ProjectDistributed(bytes32 indexed projectId, address indexed talent, uint256 amount);
-    event ProjectRefunded(bytes32 indexed projectId, address indexed sponsor, uint256 amount);
+    event SchoolingDegreeRewarded(
+        address indexed user,
+        bytes32 degreeId,
+        uint256 amount
+    );
+    event TalentHiredRewarded(
+        address indexed talent,
+        uint256 month,
+        uint256 amount
+    );
+    event ProjectFunded(
+        bytes32 indexed projectId,
+        address indexed sponsor,
+        uint256 amount
+    );
+    event ProjectDistributed(
+        bytes32 indexed projectId,
+        address indexed talent,
+        uint256 amount
+    );
+    event ProjectRefunded(
+        bytes32 indexed projectId,
+        address indexed sponsor,
+        uint256 amount
+    );
 
     // --- Constructor ---
-    constructor(address hackToken_, address incentivesPool_, address roleRegistry_) {
+    constructor(
+        address hackToken_,
+        address incentivesPool_,
+        address roleRegistry_
+    ) {
         if (hackToken_ == address(0)) revert InvalidAddress();
         if (incentivesPool_ == address(0)) revert InvalidAddress();
         if (roleRegistry_ == address(0)) revert InvalidAddress();
@@ -106,11 +138,10 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
 
     // --- Mechanism 4: Schooling degree bonus ---
 
-    function rewardSchoolingDegree(address user_, bytes32 degreeId_)
-        external
-        onlyRole(ENFORCER_ROLE)
-        nonReentrant
-    {
+    function rewardSchoolingDegree(
+        address user_,
+        bytes32 degreeId_
+    ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (user_ == address(0)) revert InvalidAddress();
         if (degreeRewarded[user_][degreeId_]) revert DegreeAlreadyRewarded();
 
@@ -127,11 +158,9 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
 
     // --- Mechanism 11: Talent hired bonus ---
 
-    function rewardTalentHired(address talent_)
-        external
-        onlyRole(ENFORCER_ROLE)
-        nonReentrant
-    {
+    function rewardTalentHired(
+        address talent_
+    ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (talent_ == address(0)) revert InvalidAddress();
 
         uint256 currentMonth = block.timestamp / 30 days;
@@ -158,24 +187,37 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
      * Aportaciones sucesivas (incluso de sponsors distintos) se acumulan
      * de forma rastreable, sin sobrescribir al sponsor anterior.
      */
-    function fundProject(bytes32 projectId_, uint256 amount_) external nonReentrant {
+    function fundProject(
+        bytes32 projectId_,
+        uint256 amount_
+    ) external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (projectId_ == bytes32(0)) revert InvalidProjectId();
         if (
             amount_ != FUNDING_TIER_1 &&
             amount_ != FUNDING_TIER_2 &&
             amount_ != FUNDING_TIER_3
         ) revert InvalidFundingTier();
-        if (!roleRegistry.isEducator(msg.sender) && !roleRegistry.isRecruiter(msg.sender)) {
+        if (
+            !roleRegistry.isEducator(msg.sender) &&
+            !roleRegistry.isRecruiter(msg.sender)
+        ) {
             revert UnauthorizedSponsor();
         }
 
         if (projectFundingDeadline[projectId_] == 0) {
-            projectFundingDeadline[projectId_] = block.timestamp + FUNDING_WINDOW;
+            projectFundingDeadline[projectId_] =
+                block.timestamp +
+                FUNDING_WINDOW;
         } else if (block.timestamp >= projectFundingDeadline[projectId_]) {
             revert FundingWindowClosed();
         }
 
-        bool success = hackToken.transferFrom(msg.sender, address(this), amount_);
+        bool success = hackToken.transferFrom(
+            msg.sender,
+            address(this),
+            amount_
+        );
         if (!success) revert TransferFailed();
 
         contribution[projectId_][msg.sender] += amount_;
@@ -205,7 +247,8 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
             totalToDistribute += amounts_[i];
         }
 
-        uint256 remaining = projectFundedAmount[projectId_] - projectDistributedAmount[projectId_];
+        uint256 remaining = projectFundedAmount[projectId_] -
+            projectDistributedAmount[projectId_];
         if (totalToDistribute > remaining) revert ExceedsFundedAmount();
 
         projectDistributedAmount[projectId_] += totalToDistribute;
@@ -213,7 +256,8 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
         for (uint256 i = 0; i < talents_.length; i++) {
             if (talents_[i] == address(0)) revert InvalidAddress();
             if (amounts_[i] == 0) revert InvalidAmount();
-            if (isProjectSponsor[projectId_][talents_[i]]) revert TalentCannotBeSponsor();
+            if (isProjectSponsor[projectId_][talents_[i]])
+                revert TalentCannotBeSponsor();
 
             bool success = hackToken.transfer(talents_[i], amounts_[i]);
             if (!success) revert TransferFailed();
@@ -229,7 +273,8 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
      * del total del proyecto sobre lo que el aporto.
      */
     function refundContribution(bytes32 projectId_) external nonReentrant {
-        if (block.timestamp < projectFundingDeadline[projectId_]) revert FundingWindowStillOpen();
+        if (block.timestamp < projectFundingDeadline[projectId_])
+            revert FundingWindowStillOpen();
         if (refunded[projectId_][msg.sender]) revert AlreadyRefunded();
 
         uint256 myContribution = contribution[projectId_][msg.sender];
@@ -254,18 +299,30 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
 
     // --- Views ---
 
-    function hasDegreeReward(address user_, bytes32 degreeId_) external view returns (bool) {
+    function hasDegreeReward(
+        address user_,
+        bytes32 degreeId_
+    ) external view returns (bool) {
         return degreeRewarded[user_][degreeId_];
     }
 
-    function getLastHiringRewardMonth(address talent_) external view returns (uint256) {
+    function getLastHiringRewardMonth(
+        address talent_
+    ) external view returns (uint256) {
         return lastHiringRewardMonth[talent_];
     }
 
-    function getProjectFunding(bytes32 projectId_)
+    function getProjectFunding(
+        bytes32 projectId_
+    )
         external
         view
-        returns (uint256 funded, uint256 distributed, uint256 remaining, uint256 deadline)
+        returns (
+            uint256 funded,
+            uint256 distributed,
+            uint256 remaining,
+            uint256 deadline
+        )
     {
         funded = projectFundedAmount[projectId_];
         distributed = projectDistributedAmount[projectId_];
@@ -280,7 +337,9 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
         incentivesPool = newPool_;
     }
 
-    function setRoleRegistry(address newRegistry_) external onlyRole(ADMIN_ROLE) {
+    function setRoleRegistry(
+        address newRegistry_
+    ) external onlyRole(ADMIN_ROLE) {
         if (newRegistry_ == address(0)) revert InvalidAddress();
         roleRegistry = IRoleRegistry(newRegistry_);
     }
@@ -288,10 +347,15 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
 
 // --- Interfaces ---
 interface IIncentivesPool {
-    function distribute(address to_, uint256 amount_, string calldata reason_) external;
+    function distribute(
+        address to_,
+        uint256 amount_,
+        string calldata reason_
+    ) external;
 }
 
 interface IRoleRegistry {
     function isEducator(address account_) external view returns (bool);
     function isRecruiter(address account_) external view returns (bool);
+    function isBlocked(address account_) external view returns (bool);
 }
