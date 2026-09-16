@@ -2,22 +2,29 @@
 pragma solidity 0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
 /**
  * @title HackToken
- * @dev ERC20 token with pausable transfers, role-based minting and burning,
- * and ownership transfer. Uses OpenZeppelin for security and standard compliance.
+ * @dev ERC20 token with pausable transfers, role-gated minting, holder-driven
+ * burning and ownership transfer. Uses OpenZeppelin for security and standard
+ * compliance.
+ *
+ * Burning follows the ERC20Burnable standard: a holder destroys their own
+ * balance with burn(), and a third party can only burn on their behalf through
+ * burnFrom(), after the holder has granted an allowance. There is no
+ * administrative burn — penalties are settled by transfer in PenaltySystem,
+ * and enforcement comes from profile blocking, not from confiscation.
  */
-contract HackToken is ERC20, Pausable, Ownable, AccessControl {
+contract HackToken is ERC20, ERC20Burnable, Pausable, Ownable, AccessControl {
 
     // --- Roles ---
     // CHANGE 3: Define roles as bytes32 constants
     // keccak256 is the standard way to create a unique identifier for each role
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     // --- Variables ---
@@ -28,7 +35,6 @@ contract HackToken is ERC20, Pausable, Ownable, AccessControl {
     error AmountMustBeGreaterThanZero();
     error InvalidAddress();
     error MaxSupplyExceeded();
-    error InsufficientBalance();
 
     // --- Constructor ---
     /**
@@ -39,14 +45,12 @@ contract HackToken is ERC20, Pausable, Ownable, AccessControl {
     constructor() ERC20("Hack Chain Token", "HACK") Ownable(msg.sender) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender); // can assign and revoke roles
         _grantRole(MINTER_ROLE, msg.sender);
-        _grantRole(BURNER_ROLE, msg.sender);
         _grantRole(PAUSER_ROLE, msg.sender);
     }
 
     // --- Events ---
     event TransferNewOwner(address indexed previousOwner, address indexed newOwner);
     event TokenMinted(address to, uint256 amount);
-    event TokenBurned(address indexed from, uint256 amount);
 
     // --- External functions ---
 
@@ -64,20 +68,6 @@ contract HackToken is ERC20, Pausable, Ownable, AccessControl {
         mintedTokens += amount_;
         _mint(to_, amount_);
         emit TokenMinted(to_, amount_);
-    }
-
-    /**
-     * @notice Burns tokens from a specified address.
-     * CHANGE 6: onlyOwner → onlyRole(BURNER_ROLE)
-     * PenaltySystem will be able to burn tokens from penalized users.
-     * CHANGE 7: Added `from_` parameter to burn tokens from any address
-     * (required for penalties — PenaltySystem burns tokens from the offending user)
-     */
-    function burn(address from_, uint256 amount_) public onlyRole(BURNER_ROLE) whenNotPaused {
-        if (amount_ == 0) revert AmountMustBeGreaterThanZero();
-        if (balanceOf(from_) < amount_) revert InsufficientBalance();
-        _burn(from_, amount_);
-        emit TokenBurned(from_, amount_);
     }
 
     /**

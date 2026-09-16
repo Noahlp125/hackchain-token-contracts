@@ -3,12 +3,22 @@ pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {HackToken} from "../src/HackTokenERC20.sol";
 
-/// @dev PoCs de la auditoria externa de Itish (30/08/2026) sobre HackTokenERC20.sol.
-/// Reproducen el comportamiento vulnerable del contrato tal y como fue auditado, por eso ahora mismo pasan. Cada uno se convertira en regresion dentro del commit que arregle su hallazgo, la prueba de la vulnerabilidad queda en el historial.
-
-/// Cobertura: HC-TKN-001 a HC-TKN-005. Los hallazgos HC-TKN-006 a HC-TKN-010 son estilo, documentacion, indexado y gas: no son reproducibles como PoC.
+/// @dev Mapa de la auditoria externa de Itish (30/08/2026) sobre HackTokenERC20.sol: una
+/// prueba por hallazgo reproducible. Cada una nace como PoC que reproduce el comportamiento
+/// vulnerable del contrato auditado, y se convierte en regresion dentro del commit que
+/// arregla su hallazgo. La prueba de la vulnerabilidad queda en el historial de git.
+///
+/// El encabezado de cada test dice en que estado esta: SIN CORREGIR si sigue demostrando la
+/// vulnerabilidad, CORREGIDO si ya comprueba la propiedad segura.
+///
+/// La bateria de regresion completa de cada hallazgo vive en su propio fichero,
+/// TokenHCTKNXXXTest.t.sol.
+///
+/// Cobertura: HC-TKN-001 a HC-TKN-005. Los hallazgos HC-TKN-006 a HC-TKN-010 son estilo,
+/// documentacion, indexado y gas: no son reproducibles como PoC.
 
 contract TokenAuditValidation is Test {
     HackToken token;
@@ -22,32 +32,35 @@ contract TokenAuditValidation is Test {
         token = new HackToken();
     }
 
-    /// @dev HC-TKN-001 (ALTO): burn() acepta un `from_` controlado por quien llama, sin
-    /// comprobacion de propiedad, allowance ni consentimiento del titular. Cualquier
-    /// direccion con BURNER_ROLE puede destruir el saldo de un tercero.
-    /// Resultado esperado actual: el saldo de HOLDER queda a cero sin haber aprobado nada.
-    function testBurnerCanDestroyAnyHolderBalance() public {
+    /// @dev HC-TKN-001 (ALTO, CORREGIDO): el PoC original concedia BURNER_ROLE a una
+    /// direccion cualquiera y esta vaciaba el saldo de un tercero con burn(from_, amount_).
+    /// Tras adoptar ERC20Burnable ese camino no existe: no hay BURNER_ROLE, y la unica via
+    /// para quemar el saldo de otro es burnFrom(), que exige allowance previo del titular.
+    /// Resultado esperado ahora: sin aprobacion del titular, la quema revierte.
+    function testCannotBurnAnotherHoldersBalanceWithoutAllowance() public {
         token.mintTokens(HOLDER, 10_000 ether);
-        token.grantRole(token.BURNER_ROLE(), BURNER);
 
         assertEq(
             token.allowance(HOLDER, BURNER),
             0,
-            "sanity: the burner holds no allowance"
-        );
-        assertEq(
-            token.balanceOf(HOLDER),
-            10_000 ether,
-            "sanity: the holder owns the tokens"
+            "sanity: the caller holds no allowance"
         );
 
         vm.prank(BURNER);
-        token.burn(HOLDER, 10_000 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector,
+                BURNER,
+                0,
+                10_000 ether
+            )
+        );
+        token.burnFrom(HOLDER, 10_000 ether);
 
         assertEq(
             token.balanceOf(HOLDER),
-            0,
-            "a BURNER_ROLE holder wiped a third party balance without consent"
+            10_000 ether,
+            "the holder balance must survive a burn attempt without consent"
         );
     }
 
@@ -80,11 +93,13 @@ contract TokenAuditValidation is Test {
         );
     }
 
-    /// @dev HC-TKN-003 (IMPORTANTE): el constructor concede los cuatro roles a la misma
-    /// direccion que despliega, sin multifirma ni timelock. Una sola clave puede emitir
-    /// hasta el tope, quemar el saldo de cualquiera y pausar las transferencias.
-    /// Resultado esperado actual: los cuatro roles en una unica EOA.
-    function testDeployerHoldsAllFourRolesAfterDeploy() public view {
+    /// @dev HC-TKN-003 (IMPORTANTE, SIN CORREGIR): el constructor concede todos los roles a
+    /// la misma direccion que despliega, sin multifirma ni timelock. Una sola clave puede
+    /// emitir hasta el tope y pausar las transferencias.
+    /// Adaptado en HC-TKN-001: eran cuatro roles, ahora son tres — BURNER_ROLE ya no existe.
+    /// El hallazgo sigue vivo, solo se ha reducido en uno el numero de roles acumulados.
+    /// Resultado esperado actual: los tres roles en una unica EOA.
+    function testDeployerHoldsAllRolesAfterDeploy() public view {
         assertTrue(
             token.hasRole(token.DEFAULT_ADMIN_ROLE(), address(this)),
             "deployer administers roles"
@@ -94,18 +109,16 @@ contract TokenAuditValidation is Test {
             "deployer can mint"
         );
         assertTrue(
-            token.hasRole(token.BURNER_ROLE(), address(this)),
-            "deployer can burn"
-        );
-        assertTrue(
             token.hasRole(token.PAUSER_ROLE(), address(this)),
             "deployer can pause"
         );
     }
 
-    /// @dev HC-TKN-004 (IMPORTANTE): mintTokens() comprueba el tope contra mintedTokens,
-    /// un contador que solo crece. burn() reduce totalSupply() pero no lo decrementa, asi
-    /// que las quemas no devuelven margen de emision.
+    /// @dev HC-TKN-004 (IMPORTANTE, SIN CORREGIR): mintTokens() comprueba el tope contra
+    /// mintedTokens, un contador que solo crece. Quemar reduce totalSupply() pero no lo
+    /// decrementa, asi que las quemas no devuelven margen de emision.
+    /// Adaptado en HC-TKN-001: antes quemaba el deployer via burn(HOLDER, cap); ahora es el
+    /// propio titular quien quema lo suyo. El fallo del contador es identico.
     /// Resultado esperado actual: con el circulante a cero, emitir 1 wei sigue revirtiendo.
     function testBurningDoesNotRestoreMintHeadroom() public {
         uint256 cap = token.maxSupply();
@@ -117,7 +130,8 @@ contract TokenAuditValidation is Test {
             "sanity: the whole cap has been minted"
         );
 
-        token.burn(HOLDER, cap);
+        vm.prank(HOLDER);
+        token.burn(cap);
         assertEq(
             token.totalSupply(),
             0,
