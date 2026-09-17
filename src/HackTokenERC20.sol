@@ -60,7 +60,26 @@ contract HackToken is
     uint48 public constant ADMIN_TRANSFER_DELAY = 3 days;
 
     // --- Variables ---
+    /// @notice Hard cap on the tokens this contract will ever mint.
+    /// @dev This is a LIFETIME issuance cap, not a cap on circulating supply.
+    /// Burning does not free headroom: destroyed tokens are gone and are never
+    /// reissued.
+    ///
+    /// The project's tokenomics allocate the whole 1,000,000,000 across closed
+    /// buckets, team, private sale, public presale, public sale, incentives,
+    /// treasury and airdrops, summing to 100%. A token minted to replace a
+    /// burned one would belong to no bucket, and those percentages would stop
+    /// describing anything.
+    ///
+    /// Reaching the cap is the intended end state, not a failure: minting stops,
+    /// and rewards keep being paid out of the pre-allocated incentives bucket,
+    /// which recycles existing tokens through IncentivesPool rather than
+    /// creating new ones.
     uint256 public maxSupply = 1000000000 * (10 ** decimals());
+
+    /// @notice Total HACK minted since deployment. Only ever increases.
+    /// @dev Deliberately never decremented by burns — see {maxSupply}.
+    /// Integrators after circulating supply want totalSupply(), not this.
     uint256 public mintedTokens;
 
     // --- Custom Errors ---
@@ -93,9 +112,9 @@ contract HackToken is
 
     /**
      * @notice Mints new tokens to a specified address.
-     * CHANGE 5: onlyOwner → onlyRole(MINTER_ROLE)
-     * StakingContract and IncentivesPool will be able to mint rewards
-     * once the owner grants them MINTER_ROLE.
+     * @dev Gated by MINTER_ROLE. The cap is checked against mintedTokens, the
+     * lifetime issuance counter, and not against totalSupply(): burning does not
+     * give minting headroom back. See {maxSupply} for the reasoning.
      */
     function mintTokens(
         address to_,
@@ -108,6 +127,15 @@ contract HackToken is
         mintedTokens += amount_;
         _mint(to_, amount_);
         emit TokenMinted(to_, amount_);
+    }
+
+    /**
+     * @notice Tokens that may still be minted before the lifetime cap is reached.
+     * @dev maxSupply, mintedTokens. Unaffected by burns, by design: this is
+     * headroom for issuance, not the gap to a circulating-supply ceiling.
+     */
+    function remainingMintable() public view returns (uint256) {
+        return maxSupply - mintedTokens;
     }
 
     /**

@@ -2,8 +2,12 @@
 pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {
+    IAccessControl
+} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {
+    IERC20Errors
+} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {HackToken} from "../src/HackTokenERC20.sol";
 
 /// @dev Mapa de la auditoria externa de Itish (30/08/2026) sobre HackTokenERC20.sol: una
@@ -128,16 +132,25 @@ contract TokenAuditValidation is Test {
             fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), OTHER_ADMIN),
             "the declared admin administers roles"
         );
-        assertEq(fresh.owner(), OTHER_ADMIN, "owner() reports the declared admin");
+        assertEq(
+            fresh.owner(),
+            OTHER_ADMIN,
+            "owner() reports the declared admin"
+        );
     }
 
-    /// @dev HC-TKN-004 (IMPORTANTE, SIN CORREGIR): mintTokens() comprueba el tope contra
-    /// mintedTokens, un contador que solo crece. Quemar reduce totalSupply() pero no lo
-    /// decrementa, asi que las quemas no devuelven margen de emision.
-    /// Adaptado en HC-TKN-001: antes quemaba el deployer via burn(HOLDER, cap); ahora es el
-    /// propio titular quien quema lo suyo. El fallo del contador es identico.
-    /// Resultado esperado actual: con el circulante a cero, emitir 1 wei sigue revirtiendo.
-    function testBurningDoesNotRestoreMintHeadroom() public {
+    /// @dev HC-TKN-004 (IMPORTANTE, CORREGIDO): el comportamiento observable no cambia con
+    /// el circulante a cero, emitir 1 wei sigue revirtiendo. Lo que cambia es que ha dejado de
+    /// ser un efecto no documentado para pasar a ser una propiedad declarada.
+    ///
+    /// El tope mide emision acumulada, no circulante: la tokenomics reparte los 1.000M en
+    /// cubos cerrados que suman el 100%, asi que un token emitido para reemplazar a uno
+    /// quemado no perteneceria a ningun cubo. Agotar el tope es el final previsto, no un
+    /// fallo: las recompensas salen del cubo de Incentivos, que recicla tokens existentes a
+    /// traves de IncentivesPool y nunca acuña.
+    ///
+    /// Resultado esperado ahora: quemar no devuelve margen, y eso es correcto.
+    function testBurningDoesNotFreeMintHeadroomByDesign() public {
         uint256 cap = token.maxSupply();
 
         token.mintTokens(HOLDER, cap);
@@ -157,7 +170,12 @@ contract TokenAuditValidation is Test {
         assertEq(
             token.mintedTokens(),
             cap,
-            "the lifetime counter ignores the burn"
+            "the lifetime counter is unaffected by the burn, as documented"
+        );
+        assertEq(
+            token.remainingMintable(),
+            0,
+            "no headroom is left, and burning did not create any"
         );
 
         vm.expectRevert(HackToken.MaxSupplyExceeded.selector);
