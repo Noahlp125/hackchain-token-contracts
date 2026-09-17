@@ -17,7 +17,7 @@ contract RecruiterBonusesM06Test is Test {
     address STRANGER = makeAddr("stranger");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         bonuses = new RecruiterBonuses(address(pool), address(registry));

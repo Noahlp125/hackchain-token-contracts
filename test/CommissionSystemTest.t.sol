@@ -14,7 +14,7 @@ contract CommissionSystemTest is Test {
     address PAYEE = makeAddr("payee");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         token.mintTokens(PAYER, 10_000 ether);
 
         commission = new CommissionSystem(address(token), TREASURY);

@@ -16,7 +16,7 @@ contract StakingContractH02Test is Test {
     address USER = makeAddr("user");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         staking = new StakingContract(address(token), address(pool), address(registry));

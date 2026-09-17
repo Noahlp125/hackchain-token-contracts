@@ -2,7 +2,7 @@
 pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {HackToken} from "../src/HackTokenERC20.sol";
 
@@ -26,10 +26,19 @@ contract TokenAuditValidation is Test {
     address HOLDER = makeAddr("holder");
     address BURNER = makeAddr("burner");
     address ATTACKER = makeAddr("attacker");
-    address NEW_OWNER = makeAddr("new-owner");
+    address NEW_ADMIN = makeAddr("new-admin");
+    address OTHER_ADMIN = makeAddr("other-admin");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
+    }
+
+    /// @dev Traspaso completo de la administracion, usado por varias regresiones.
+    function _handOverAdminTo(address newAdmin_) internal {
+        token.beginDefaultAdminTransfer(newAdmin_);
+        vm.warp(block.timestamp + token.defaultAdminDelay() + 1);
+        vm.prank(newAdmin_);
+        token.acceptDefaultAdminTransfer();
     }
 
     /// @dev HC-TKN-001 (ALTO, CORREGIDO): el PoC original concedia BURNER_ROLE a una
@@ -64,54 +73,62 @@ contract TokenAuditValidation is Test {
         );
     }
 
-    /// @dev HC-TKN-002 (ALTO): transferOwnershipCustom() mueve solo el slot de Ownable.
-    /// DEFAULT_ADMIN_ROLE se concede una unica vez en el constructor y la cesion de
-    /// propiedad no lo toca, asi que quien despliega conserva todo el poder real.
-    /// Resultado esperado actual: tras ceder la propiedad, el deployer sigue pudiendo
-    /// conceder MINTER_ROLE y emitir a traves de un tercero.
-    function testDeployerKeepsAdminRoleAfterOwnershipTransfer() public {
-        token.transferOwnershipCustom(NEW_OWNER);
-        assertEq(
-            token.owner(),
-            NEW_OWNER,
-            "sanity: ownership moved to the new owner"
-        );
+    /// @dev HC-TKN-002 (ALTO, CORREGIDO): el PoC original cedia la propiedad con
+    /// transferOwnershipCustom() y demostraba que el deployer conservaba DEFAULT_ADMIN_ROLE,
+    /// pudiendo concederse MINTER_ROLE indefinidamente.
+    /// Tras adoptar AccessControlDefaultAdminRules no hay capa Ownable: owner() es una vista
+    /// sobre defaultAdmin(), asi que titularidad y administracion no pueden divergir.
+    /// Resultado esperado ahora: tras el traspaso, el admin anterior no conserva el rol ni
+    /// puede conceder ninguno.
+    function testPreviousAdminRetainsNoControlAfterHandover() public {
+        _handOverAdminTo(NEW_ADMIN);
 
-        assertTrue(
+        assertEq(token.owner(), NEW_ADMIN, "owner() follows defaultAdmin()");
+        assertFalse(
             token.hasRole(token.DEFAULT_ADMIN_ROLE(), address(this)),
-            "the previous owner still administers every role"
+            "the previous admin keeps no administrative role"
         );
 
-        token.grantRole(token.MINTER_ROLE(), ATTACKER);
-        vm.prank(ATTACKER);
-        token.mintTokens(ATTACKER, 1_000 ether);
+        // Los getters de rol se resuelven antes de armar expectRevert: si se dejan dentro de
+        // la llamada, la cheatcode captura esa lectura en vez de la llamada que debe revertir.
+        bytes32 adminRole = token.DEFAULT_ADMIN_ROLE();
+        bytes32 minterRole = token.MINTER_ROLE();
 
-        assertEq(
-            token.balanceOf(ATTACKER),
-            1_000 ether,
-            "the former owner still mints after handing over ownership"
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector,
+                address(this),
+                adminRole
+            )
         );
+        token.grantRole(minterRole, ATTACKER);
     }
 
-    /// @dev HC-TKN-003 (IMPORTANTE, SIN CORREGIR): el constructor concede todos los roles a
-    /// la misma direccion que despliega, sin multifirma ni timelock. Una sola clave puede
-    /// emitir hasta el tope y pausar las transferencias.
-    /// Adaptado en HC-TKN-001: eran cuatro roles, ahora son tres — BURNER_ROLE ya no existe.
-    /// El hallazgo sigue vivo, solo se ha reducido en uno el numero de roles acumulados.
-    /// Resultado esperado actual: los tres roles en una unica EOA.
-    function testDeployerHoldsAllRolesAfterDeploy() public view {
-        assertTrue(
-            token.hasRole(token.DEFAULT_ADMIN_ROLE(), address(this)),
-            "deployer administers roles"
+    /// @dev HC-TKN-003 (IMPORTANTE, CORREGIDO): el constructor concedia los roles a
+    /// msg.sender, dejando a quien desplegaba como punto unico de fallo.
+    /// Ahora recibe la direccion administradora como parametro y no concede nada al deployer.
+    /// Resultado esperado ahora: quien despliega no conserva ningun rol.
+    function testDeployerHoldsNoRolesWhenAdminIsAnother() public {
+        HackToken fresh = new HackToken(OTHER_ADMIN);
+
+        assertFalse(
+            fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), address(this)),
+            "the deployer does not administer roles"
         );
-        assertTrue(
-            token.hasRole(token.MINTER_ROLE(), address(this)),
-            "deployer can mint"
+        assertFalse(
+            fresh.hasRole(fresh.MINTER_ROLE(), address(this)),
+            "the deployer cannot mint"
         );
-        assertTrue(
-            token.hasRole(token.PAUSER_ROLE(), address(this)),
-            "deployer can pause"
+        assertFalse(
+            fresh.hasRole(fresh.PAUSER_ROLE(), address(this)),
+            "the deployer cannot pause"
         );
+
+        assertTrue(
+            fresh.hasRole(fresh.DEFAULT_ADMIN_ROLE(), OTHER_ADMIN),
+            "the declared admin administers roles"
+        );
+        assertEq(fresh.owner(), OTHER_ADMIN, "owner() reports the declared admin");
     }
 
     /// @dev HC-TKN-004 (IMPORTANTE, SIN CORREGIR): mintTokens() comprueba el tope contra
@@ -147,26 +164,36 @@ contract TokenAuditValidation is Test {
         token.mintTokens(HOLDER, 1);
     }
 
-    /// @dev HC-TKN-005 (IMPORTANTE): transferOwnershipCustom() llama a la version de un
-    /// solo paso de Ownable, efectiva de inmediato. No hay aceptacion por parte del
-    /// destinatario, asi que un error de tipeo deja el contrato sin control recuperable.
-    /// Resultado esperado actual: la propiedad cambia en una sola transaccion y el owner
-    /// anterior ya no puede revertirla.
-    function testOwnershipTransfersInOneStepWithNoAcceptance() public {
-        token.transferOwnershipCustom(NEW_OWNER);
+    /// @dev HC-TKN-005 (IMPORTANTE, CORREGIDO): el PoC original demostraba que la propiedad
+    /// cambiaba en una sola transaccion, sin aceptacion, dejando el contrato sin control
+    /// recuperable ante un error de tipeo.
+    /// Ahora el traspaso es en dos pasos con retardo: agendar, esperar, y que el destinatario
+    /// acepte. Hasta entonces no cambia nada y el admin actual puede cancelar.
+    /// Resultado esperado ahora: sin aceptacion, la administracion no se mueve.
+    function testAdminTransferDoesNotTakeEffectWithoutAcceptance() public {
+        token.beginDefaultAdminTransfer(NEW_ADMIN);
 
         assertEq(
             token.owner(),
-            NEW_OWNER,
-            "ownership moved with no acceptance step from the recipient"
+            address(this),
+            "scheduling alone moves nothing"
         );
 
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Ownable.OwnableUnauthorizedAccount.selector,
-                address(this)
-            )
+        vm.warp(block.timestamp + token.defaultAdminDelay() + 1);
+
+        assertEq(
+            token.owner(),
+            address(this),
+            "the delay elapsing alone moves nothing either"
         );
-        token.transferOwnershipCustom(address(this));
+
+        vm.prank(NEW_ADMIN);
+        token.acceptDefaultAdminTransfer();
+
+        assertEq(
+            token.owner(),
+            NEW_ADMIN,
+            "control moves only once the recipient accepts"
+        );
     }
 }

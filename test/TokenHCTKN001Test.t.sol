@@ -22,7 +22,7 @@ contract TokenHCTKN001Test is Test {
     address BYSTANDER = makeAddr("bystander");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         token.mintTokens(HOLDER, 10_000 ether);
         token.mintTokens(BYSTANDER, 10_000 ether);
     }

@@ -19,7 +19,7 @@ contract ReferralSystemH01Test is Test {
     address REFERRED = makeAddr("referred");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         staking = new StakingContract(address(token), address(pool), address(registry));
