@@ -5,7 +5,9 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {
     ERC20Burnable
 } from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {
+    ERC20Pausable
+} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
 import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
@@ -42,12 +44,10 @@ import {
 contract HackToken is
     ERC20,
     ERC20Burnable,
-    Pausable,
+    ERC20Pausable,
     AccessControlDefaultAdminRules
 {
     // --- Roles ---
-    // CHANGE 3: Define roles as bytes32 constants
-    // keccak256 is the standard way to create a unique identifier for each role
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
@@ -75,7 +75,7 @@ contract HackToken is
     /// and rewards keep being paid out of the pre-allocated incentives bucket,
     /// which recycles existing tokens through IncentivesPool rather than
     /// creating new ones.
-    uint256 public maxSupply = 1000000000 * (10 ** decimals());
+    uint256 public immutable maxSupply;
 
     /// @notice Total HACK minted since deployment. Only ever increases.
     /// @dev Deliberately never decremented by burns — see {maxSupply}.
@@ -101,12 +101,14 @@ contract HackToken is
         ERC20("Hack Chain Token", "HACK")
         AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, initialAdmin_)
     {
+        maxSupply = 1000000000 * (10 ** decimals());
+
         _grantRole(MINTER_ROLE, initialAdmin_);
         _grantRole(PAUSER_ROLE, initialAdmin_);
     }
 
     // --- Events ---
-    event TokenMinted(address to, uint256 amount);
+    event TokenMinted(address indexed to, uint256 amount);
 
     // --- External functions ---
 
@@ -115,6 +117,11 @@ contract HackToken is
      * @dev Gated by MINTER_ROLE. The cap is checked against mintedTokens, the
      * lifetime issuance counter, and not against totalSupply(): burning does not
      * give minting headroom back. See {maxSupply} for the reasoning.
+     *
+     * Minting is blocked while the contract is paused. The modifier is not
+     * repeated here on purpose: _update() already enforces it through
+     * ERC20Pausable, and declaring it again would duplicate that check on every
+     * mint for no gain.
      */
     function mintTokens(
         address to_,
@@ -139,8 +146,7 @@ contract HackToken is
     }
 
     /**
-     * @notice Pauses all token transfers.
-     * CHANGE 8: onlyOwner → onlyRole(PAUSER_ROLE)
+     * @notice Pauses all token transfers, including minting and burning.
      */
     function pause() public onlyRole(PAUSER_ROLE) {
         _pause();
@@ -148,7 +154,6 @@ contract HackToken is
 
     /**
      * @notice Unpauses token transfers.
-     * CHANGE 8: onlyOwner → onlyRole(PAUSER_ROLE)
      */
     function unpause() public onlyRole(PAUSER_ROLE) {
         _unpause();
@@ -156,12 +161,16 @@ contract HackToken is
 
     // --- Internal ---
 
+    /**
+     * @dev Disambiguation between ERC20 and ERC20Pausable. No logic of its own:
+     * the pause check comes from ERC20Pausable's whenNotPaused, and every
+     * transfer, mint and burn funnels through here.
+     */
     function _update(
         address from,
         address to,
         uint256 amount
-    ) internal override {
-        require(!paused(), "Pausable: token transfer while paused");
+    ) internal override(ERC20, ERC20Pausable) {
         super._update(from, to, amount);
     }
 }

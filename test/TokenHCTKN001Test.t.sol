@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {HackToken} from "../src/HackTokenERC20.sol";
 
 /// @dev Regresiones de HC-TKN-001 (ALTO, auditoria externa de Itish 30/08/2026).
@@ -88,14 +89,15 @@ contract TokenHCTKN001Test is Test {
         token.burn(10_001 ether);
     }
 
-    /// @dev ERC20Burnable no lleva whenNotPaused, pero _burn pasa por _update, que revierte con
-    /// el contrato pausado. El comportamiento es identico al de la version auditada, que si lo
-    /// declaraba en el modificador. Esta regresion existe para que siga siendo cierto.
+    /// @dev ERC20Burnable no lleva whenNotPaused, pero _burn pasa por _update, que lo aplica via
+    /// ERC20Pausable. El comportamiento es identico al de la version auditada; lo que cambio en
+    /// HC-TKN-006 es que el revert pasa a ser el error estandar EnforcedPause() en vez de un
+    /// require con string propio. Esta regresion existe para que la ruta siga bloqueada.
     function test_HCTKN001_BurnRevertsWhenPaused() public {
         token.pause();
 
         vm.prank(HOLDER);
-        vm.expectRevert("Pausable: token transfer while paused");
+        vm.expectRevert(Pausable.EnforcedPause.selector);
         token.burn(1 ether);
 
         assertEq(token.balanceOf(HOLDER), 10_000 ether, "no burn goes through while paused");
@@ -109,7 +111,7 @@ contract TokenHCTKN001Test is Test {
         token.pause();
 
         vm.prank(SPENDER);
-        vm.expectRevert("Pausable: token transfer while paused");
+        vm.expectRevert(Pausable.EnforcedPause.selector);
         token.burnFrom(HOLDER, 1 ether);
     }
 
