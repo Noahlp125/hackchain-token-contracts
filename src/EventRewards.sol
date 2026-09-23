@@ -2,7 +2,9 @@
 pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title EventRewards
@@ -12,9 +14,12 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * Mechanism 18: Educator hosts their first academic event → 5,000 tokens (once ever).
  * Mechanism 19: Educator hosts 4 academic events in a month → 4,000 tokens.
  * Events are verified off-chain by an enforcer before rewards are distributed.
+ *
+ * HC-SRC-002 fix: claimTalentAttendanceReward() y claimEducatorMonthlyReward()
+ * consultan RoleRegistry.isBlocked(), un perfil bloqueado no puede
+ * reclamar ninguno de los dos incentivos.
  */
 contract EventRewards is AccessControl, ReentrancyGuard {
-
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     // ENFORCER_ROLE: verifies event completion and triggers rewards
@@ -59,6 +64,7 @@ contract EventRewards is AccessControl, ReentrancyGuard {
 
     // --- State ---
     address public incentivesPool;
+    IRoleRegistry public roleRegistry;
 
     // Mechanism 18: tracks if educator has received their first event reward
     mapping(address => bool) public firstEventRewarded;
@@ -80,24 +86,45 @@ contract EventRewards is AccessControl, ReentrancyGuard {
     error FirstEventAlreadyRewarded();
     error MonthlyRewardAlreadyClaimed();
     error NotEnoughEventsThisMonth();
+    error ProfileBlocked();
 
     // --- Events ---
-    event PromoEventRewarded(address indexed organizer, bytes32 indexed eventId, uint256 amount);
-    event TalentAttendanceRewarded(address indexed talent, uint256 month, uint256 amount);
+    event PromoEventRewarded(
+        address indexed organizer,
+        bytes32 indexed eventId,
+        uint256 amount
+    );
+    event TalentAttendanceRewarded(
+        address indexed talent,
+        uint256 month,
+        uint256 amount
+    );
     event EducatorFirstEventRewarded(address indexed educator, uint256 amount);
-    event EducatorMonthlyEventsRewarded(address indexed educator, uint256 month, uint256 amount);
-    event TalentAttendanceRegistered(address indexed talent, uint256 eventsAttended);
-    event EducatorEventRegistered(address indexed educator, uint256 eventsHosted);
+    event EducatorMonthlyEventsRewarded(
+        address indexed educator,
+        uint256 month,
+        uint256 amount
+    );
+    event TalentAttendanceRegistered(
+        address indexed talent,
+        uint256 eventsAttended
+    );
+    event EducatorEventRegistered(
+        address indexed educator,
+        uint256 eventsHosted
+    );
 
     // --- Constructor ---
     /**
      * @dev Links EventRewards to IncentivesPool.
      * @param incentivesPool_ Address of the deployed IncentivesPool contract.
      */
-    constructor(address incentivesPool_) {
+    constructor(address incentivesPool_, address roleRegistry_) {
         if (incentivesPool_ == address(0)) revert InvalidAddress();
+        if (roleRegistry_ == address(0)) revert InvalidAddress();
 
         incentivesPool = incentivesPool_;
+        roleRegistry = IRoleRegistry(roleRegistry_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
@@ -145,10 +172,9 @@ contract EventRewards is AccessControl, ReentrancyGuard {
      * Resets the counter automatically when a new month starts.
      * @param talent_ Address of the Talent who attended.
      */
-    function registerTalentAttendance(address talent_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function registerTalentAttendance(
+        address talent_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (talent_ == address(0)) revert InvalidAddress();
 
         uint256 currentMonth = block.timestamp / 30 days;
@@ -172,8 +198,12 @@ contract EventRewards is AccessControl, ReentrancyGuard {
      * Only claimable once per month.
      */
     function claimTalentAttendanceReward() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+
         uint256 currentMonth = block.timestamp / 30 days;
-        TalentMonthlyAttendance storage attendance = talentAttendance[msg.sender];
+        TalentMonthlyAttendance storage attendance = talentAttendance[
+            msg.sender
+        ];
 
         // Reset if new month
         if (attendance.currentMonth != currentMonth) {
@@ -195,7 +225,11 @@ contract EventRewards is AccessControl, ReentrancyGuard {
             "talent_attendance_reward"
         );
 
-        emit TalentAttendanceRewarded(msg.sender, currentMonth, TALENT_ATTENDANCE_REWARD);
+        emit TalentAttendanceRewarded(
+            msg.sender,
+            currentMonth,
+            TALENT_ATTENDANCE_REWARD
+        );
     }
 
     // --- Mechanism 18: Educator first event ---
@@ -207,11 +241,9 @@ contract EventRewards is AccessControl, ReentrancyGuard {
      * Can only be triggered once per educator ever.
      * @param educator_ Address of the educator.
      */
-    function rewardEducatorFirstEvent(address educator_)
-        external
-        onlyRole(ENFORCER_ROLE)
-        nonReentrant
-    {
+    function rewardEducatorFirstEvent(
+        address educator_
+    ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
         if (firstEventRewarded[educator_]) revert FirstEventAlreadyRewarded();
 
@@ -236,14 +268,15 @@ contract EventRewards is AccessControl, ReentrancyGuard {
      * Resets the counter automatically when a new month starts.
      * @param educator_ Address of the educator.
      */
-    function registerEducatorEvent(address educator_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function registerEducatorEvent(
+        address educator_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (educator_ == address(0)) revert InvalidAddress();
 
         uint256 currentMonth = block.timestamp / 30 days;
-        EducatorMonthlyEvents storage monthly = educatorMonthlyEvents[educator_];
+        EducatorMonthlyEvents storage monthly = educatorMonthlyEvents[
+            educator_
+        ];
 
         // Reset counter if new month
         if (monthly.currentMonth != currentMonth) {
@@ -263,8 +296,12 @@ contract EventRewards is AccessControl, ReentrancyGuard {
      * Only claimable once per month.
      */
     function claimEducatorMonthlyReward() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+
         uint256 currentMonth = block.timestamp / 30 days;
-        EducatorMonthlyEvents storage monthly = educatorMonthlyEvents[msg.sender];
+        EducatorMonthlyEvents storage monthly = educatorMonthlyEvents[
+            msg.sender
+        ];
 
         // Reset if new month
         if (monthly.currentMonth != currentMonth) {
@@ -286,7 +323,11 @@ contract EventRewards is AccessControl, ReentrancyGuard {
             "educator_monthly_events_reward"
         );
 
-        emit EducatorMonthlyEventsRewarded(msg.sender, currentMonth, EDUCATOR_MONTHLY_EVENTS_REWARD);
+        emit EducatorMonthlyEventsRewarded(
+            msg.sender,
+            currentMonth,
+            EDUCATOR_MONTHLY_EVENTS_REWARD
+        );
     }
 
     // --- Views ---
@@ -294,36 +335,36 @@ contract EventRewards is AccessControl, ReentrancyGuard {
     /**
      * @notice Returns monthly attendance info for a Talent.
      */
-    function getTalentAttendance(address talent_)
-        external
-        view
-        returns (TalentMonthlyAttendance memory)
-    {
+    function getTalentAttendance(
+        address talent_
+    ) external view returns (TalentMonthlyAttendance memory) {
         return talentAttendance[talent_];
     }
 
     /**
      * @notice Returns monthly events info for an Educator.
      */
-    function getEducatorMonthlyEvents(address educator_)
-        external
-        view
-        returns (EducatorMonthlyEvents memory)
-    {
+    function getEducatorMonthlyEvents(
+        address educator_
+    ) external view returns (EducatorMonthlyEvents memory) {
         return educatorMonthlyEvents[educator_];
     }
 
     /**
      * @notice Returns whether an educator has received their first event reward.
      */
-    function hasFirstEventReward(address educator_) external view returns (bool) {
+    function hasFirstEventReward(
+        address educator_
+    ) external view returns (bool) {
         return firstEventRewarded[educator_];
     }
 
     /**
      * @notice Returns whether a promo event has already been rewarded.
      */
-    function isPromoEventRewarded(bytes32 eventId_) external view returns (bool) {
+    function isPromoEventRewarded(
+        bytes32 eventId_
+    ) external view returns (bool) {
         return promoEventRewarded[eventId_];
     }
 
@@ -336,9 +377,24 @@ contract EventRewards is AccessControl, ReentrancyGuard {
         if (newPool_ == address(0)) revert InvalidAddress();
         incentivesPool = newPool_;
     }
+
+    function setRoleRegistry(
+        address newRegistry_
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newRegistry_ == address(0)) revert InvalidAddress();
+        roleRegistry = IRoleRegistry(newRegistry_);
+    }
 }
 
 // --- Interface ---
 interface IIncentivesPool {
-    function distribute(address to_, uint256 amount_, string calldata reason_) external;
+    function distribute(
+        address to_,
+        uint256 amount_,
+        string calldata reason_
+    ) external;
+}
+
+interface IRoleRegistry {
+    function isBlocked(address account_) external view returns (bool);
 }

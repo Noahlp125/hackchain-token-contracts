@@ -2,7 +2,9 @@
 pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title RecruiterBonuses
@@ -17,9 +19,12 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  *   transcurrido desde el registro.
  * - registerHiring() ahora recibe un talentId_ concreto y evita contar
  *   al mismo talento dos veces dentro del mismo mes.
+ *
+ * HC-SRC-002 fix: claimRegistrationBonus(), claimMonthlyHiringBonus() y
+ * claimKycBonus() consultan RoleRegistry.isBlocked(), un perfil
+ * bloqueado no puede reclamar ninguno de los tres bonos.
  */
 contract RecruiterBonuses is AccessControl, ReentrancyGuard {
-
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant ENFORCER_ROLE = keccak256("ENFORCER_ROLE");
@@ -47,6 +52,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
 
     // --- State ---
     address public incentivesPool;
+    IRoleRegistry public roleRegistry;
 
     mapping(address => RegistrationInfo) public registrationInfo;
     mapping(address => bool) public isRegistered;
@@ -65,7 +71,8 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
 
     /// @notice recruiter => mes => talentId => ya contado en ese mes.
     /// Evita que el mismo talento se cuente varias veces para el bono 28.
-    mapping(address => mapping(uint256 => mapping(bytes32 => bool))) public talentCountedThisMonth;
+    mapping(address => mapping(uint256 => mapping(bytes32 => bool)))
+        public talentCountedThisMonth;
 
     // --- Custom Errors ---
     error InvalidAddress();
@@ -79,21 +86,36 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     error NotKycVerified();
     error ActivityAlreadyProcessed();
     error TalentAlreadyCountedThisMonth();
+    error ProfileBlocked();
 
     // --- Events ---
     event RecruiterRegistered(address indexed recruiter, uint256 registeredAt);
-    event ActivityRecorded(address indexed recruiter, bytes32 activityId, uint256 uniqueActiveDays);
+    event ActivityRecorded(
+        address indexed recruiter,
+        bytes32 activityId,
+        uint256 uniqueActiveDays
+    );
     event RegistrationBonusClaimed(address indexed recruiter, uint256 amount);
-    event TalentHiringRegistered(address indexed recruiter, bytes32 talentId, uint256 talentsHired);
-    event MonthlyHiringRewarded(address indexed recruiter, uint256 month, uint256 amount);
+    event TalentHiringRegistered(
+        address indexed recruiter,
+        bytes32 talentId,
+        uint256 talentsHired
+    );
+    event MonthlyHiringRewarded(
+        address indexed recruiter,
+        uint256 month,
+        uint256 amount
+    );
     event KycVerified(address indexed recruiter);
     event KycBonusClaimed(address indexed recruiter, uint256 amount);
 
     // --- Constructor ---
-    constructor(address incentivesPool_) {
+    constructor(address incentivesPool_, address roleRegistry_) {
         if (incentivesPool_ == address(0)) revert InvalidAddress();
+        if (roleRegistry_ == address(0)) revert InvalidAddress();
 
         incentivesPool = incentivesPool_;
+        roleRegistry = IRoleRegistry(roleRegistry_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
@@ -102,10 +124,9 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
 
     // --- Mechanism 27: Registration bonus ---
 
-    function registerRecruiter(address recruiter_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function registerRecruiter(
+        address recruiter_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (recruiter_ == address(0)) revert InvalidAddress();
         if (isRegistered[recruiter_]) revert AlreadyRegistered();
 
@@ -126,10 +147,10 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
      * @param activityId_ Identificador unico de la evidencia de actividad
      * (p.ej. hash de la accion verificada off-chain por el enforcer).
      */
-    function recordActivity(address recruiter_, bytes32 activityId_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function recordActivity(
+        address recruiter_,
+        bytes32 activityId_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (!isRegistered[recruiter_]) revert NotRegistered();
         if (processedActivity[activityId_]) revert ActivityAlreadyProcessed();
 
@@ -141,7 +162,11 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
             uniqueActiveDays[recruiter_] += 1;
         }
 
-        emit ActivityRecorded(recruiter_, activityId_, uniqueActiveDays[recruiter_]);
+        emit ActivityRecorded(
+            recruiter_,
+            activityId_,
+            uniqueActiveDays[recruiter_]
+        );
     }
 
     /**
@@ -149,12 +174,14 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
      * VERIFICABLE (no solo tiempo transcurrido — M-06 fix).
      */
     function claimRegistrationBonus() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (!isRegistered[msg.sender]) revert NotRegistered();
 
         RegistrationInfo storage info = registrationInfo[msg.sender];
 
         if (info.bonusClaimed) revert RegistrationBonusAlreadyClaimed();
-        if (uniqueActiveDays[msg.sender] < MIN_ACTIVE_DAYS) revert MinActiveDaysNotReached();
+        if (uniqueActiveDays[msg.sender] < MIN_ACTIVE_DAYS)
+            revert MinActiveDaysNotReached();
 
         info.bonusClaimed = true;
 
@@ -178,10 +205,10 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
      * @param talentId_ Identificador unico del talento contratado
      * (p.ej. su address como bytes32, o un hash del registro de hiring).
      */
-    function registerHiring(address recruiter_, bytes32 talentId_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function registerHiring(
+        address recruiter_,
+        bytes32 talentId_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (recruiter_ == address(0)) revert InvalidAddress();
 
         uint256 currentMonth = block.timestamp / 30 days;
@@ -204,6 +231,8 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     }
 
     function claimMonthlyHiringBonus() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+
         uint256 currentMonth = block.timestamp / 30 days;
         MonthlyHiring storage hiring = monthlyHiring[msg.sender];
 
@@ -225,7 +254,11 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
             "recruiter_monthly_hiring_bonus"
         );
 
-        emit MonthlyHiringRewarded(msg.sender, currentMonth, MONTHLY_HIRING_BONUS);
+        emit MonthlyHiringRewarded(
+            msg.sender,
+            currentMonth,
+            MONTHLY_HIRING_BONUS
+        );
     }
 
     // --- Mechanism 29: KYC verification bonus ---
@@ -235,10 +268,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
      * @dev M-06 fix: exige que el recruiter este registrado antes de
      * poder verificarse por KYC.
      */
-    function verifyKyc(address recruiter_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function verifyKyc(address recruiter_) external onlyRole(ENFORCER_ROLE) {
         if (recruiter_ == address(0)) revert InvalidAddress();
         if (!isRegistered[recruiter_]) revert NotRegistered();
         if (kycRewarded[recruiter_]) revert KycAlreadyRewarded();
@@ -249,6 +279,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     }
 
     function claimKycBonus() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (!isRegistered[msg.sender]) revert NotRegistered();
         if (!isKycVerified[msg.sender]) revert NotKycVerified();
         if (kycRewarded[msg.sender]) revert KycAlreadyRewarded();
@@ -270,19 +301,15 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
         return isRegistered[recruiter_];
     }
 
-    function getRegistrationInfo(address recruiter_)
-        external
-        view
-        returns (RegistrationInfo memory)
-    {
+    function getRegistrationInfo(
+        address recruiter_
+    ) external view returns (RegistrationInfo memory) {
         return registrationInfo[recruiter_];
     }
 
-    function getMonthlyHiring(address recruiter_)
-        external
-        view
-        returns (MonthlyHiring memory)
-    {
+    function getMonthlyHiring(
+        address recruiter_
+    ) external view returns (MonthlyHiring memory) {
         return monthlyHiring[recruiter_];
     }
 
@@ -290,7 +317,9 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
         return isKycVerified[recruiter_];
     }
 
-    function getHiringsLeft(address recruiter_) external view returns (uint256) {
+    function getHiringsLeft(
+        address recruiter_
+    ) external view returns (uint256) {
         MonthlyHiring memory hiring = monthlyHiring[recruiter_];
         uint256 currentMonth = block.timestamp / 30 days;
 
@@ -305,9 +334,24 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
         if (newPool_ == address(0)) revert InvalidAddress();
         incentivesPool = newPool_;
     }
+
+    function setRoleRegistry(
+        address newRegistry_
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newRegistry_ == address(0)) revert InvalidAddress();
+        roleRegistry = IRoleRegistry(newRegistry_);
+    }
 }
 
 // --- Interface ---
 interface IIncentivesPool {
-    function distribute(address to_, uint256 amount_, string calldata reason_) external;
+    function distribute(
+        address to_,
+        uint256 amount_,
+        string calldata reason_
+    ) external;
+}
+
+interface IRoleRegistry {
+    function isBlocked(address account_) external view returns (bool);
 }

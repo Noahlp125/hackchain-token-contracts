@@ -5,18 +5,21 @@ import { Test } from "forge-std/Test.sol";
 import { StakingContract } from "../src/StakingContract.sol";
 import { IncentivesPool } from "../src/IncentivesPool.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
+import { RoleRegistry } from "../src/RoleRegistry.sol";
 
 contract StakingContractH02Test is Test {
     StakingContract staking;
     IncentivesPool pool;
     HackToken token;
+    RoleRegistry registry;
 
     address USER = makeAddr("user");
 
     function setUp() public {
         token = new HackToken();
         pool = new IncentivesPool(address(token));
-        staking = new StakingContract(address(token), address(pool));
+        registry = new RoleRegistry();
+        staking = new StakingContract(address(token), address(pool), address(registry));
 
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(staking));
 

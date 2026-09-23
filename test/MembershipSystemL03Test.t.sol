@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import { Test } from "forge-std/Test.sol";
 import { MembershipSystem } from "../src/MembershipSystem.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
+import { RoleRegistry } from "../src/RoleRegistry.sol";
 
 contract MockIncentivesPool {
     function deposit(uint256, string calldata) external {}
@@ -14,6 +15,7 @@ contract MembershipSystemL03Test is Test {
     MembershipSystem memberships;
     HackToken token;
     MockIncentivesPool pool;
+    RoleRegistry registry;
 
     address TREASURY = makeAddr("treasury");
     address USER = makeAddr("user");
@@ -21,8 +23,9 @@ contract MembershipSystemL03Test is Test {
     function setUp() public {
         token = new HackToken();
         pool = new MockIncentivesPool();
+        registry = new RoleRegistry();
 
-        memberships = new MembershipSystem(address(token), address(pool), TREASURY);
+        memberships = new MembershipSystem(address(token), address(pool), TREASURY, address(registry));
 
         token.mintTokens(USER, 200_000 ether);
         vm.prank(USER);

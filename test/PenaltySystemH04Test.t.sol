@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import { Test } from "forge-std/Test.sol";
 import { PenaltySystem } from "../src/PenaltySystem.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
+import { RoleRegistry } from "../src/RoleRegistry.sol";
 
 contract MockIncentivesPool {
     function deposit(uint256, string calldata) external {}
@@ -13,6 +14,7 @@ contract PenaltySystemH04Test is Test {
     PenaltySystem penalties;
     HackToken token;
     MockIncentivesPool pool;
+    RoleRegistry registry;
 
     address TREASURY = makeAddr("treasury");
     address USER = makeAddr("user");
@@ -22,7 +24,11 @@ contract PenaltySystemH04Test is Test {
     function setUp() public {
         token = new HackToken();
         pool = new MockIncentivesPool();
-        penalties = new PenaltySystem(address(token), address(pool), TREASURY);
+        registry = new RoleRegistry();
+        penalties = new PenaltySystem(address(token), address(pool), TREASURY, address(registry));
+        // PenaltySystem necesita REGISTRAR_ROLE para poder bloquear/desbloquear
+        // perfiles en RoleRegistry (HC-SRC-002).
+        registry.grantRole(registry.REGISTRAR_ROLE(), address(penalties));
 
         token.mintTokens(USER, 10_000 ether);
         token.mintTokens(EDUCATOR_A, 10_000 ether);

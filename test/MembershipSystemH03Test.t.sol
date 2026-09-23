@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import { Test } from "forge-std/Test.sol";
 import { MembershipSystem } from "../src/MembershipSystem.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
+import { RoleRegistry } from "../src/RoleRegistry.sol";
 
 /// @dev Mock mínimo de IncentivesPool: solo necesita no revertir en deposit().
 contract MockIncentivesPool {
@@ -15,6 +16,7 @@ contract MembershipSystemH03Test is Test {
     MembershipSystem memberships;
     HackToken token;
     MockIncentivesPool pool;
+    RoleRegistry registry;
 
     address TREASURY = makeAddr("treasury");
     address EDUCATOR = makeAddr("educator");
@@ -23,8 +25,9 @@ contract MembershipSystemH03Test is Test {
     function setUp() public {
         token = new HackToken();
         pool = new MockIncentivesPool();
+        registry = new RoleRegistry();
 
-        memberships = new MembershipSystem(address(token), address(pool), TREASURY);
+        memberships = new MembershipSystem(address(token), address(pool), TREASURY, address(registry));
         memberships.grantRole(memberships.EDUCATOR_ROLE(), EDUCATOR);
 
         token.mintTokens(VIEWER, 100_000 ether);

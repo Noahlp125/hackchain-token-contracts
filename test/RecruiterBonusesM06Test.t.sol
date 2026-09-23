@@ -5,11 +5,13 @@ import { Test } from "forge-std/Test.sol";
 import { RecruiterBonuses } from "../src/RecruiterBonuses.sol";
 import { IncentivesPool } from "../src/IncentivesPool.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
+import { RoleRegistry } from "../src/RoleRegistry.sol";
 
 contract RecruiterBonusesM06Test is Test {
     RecruiterBonuses bonuses;
     IncentivesPool pool;
     HackToken token;
+    RoleRegistry registry;
 
     address RECRUITER = makeAddr("recruiter");
     address STRANGER = makeAddr("stranger");
@@ -17,7 +19,8 @@ contract RecruiterBonusesM06Test is Test {
     function setUp() public {
         token = new HackToken();
         pool = new IncentivesPool(address(token));
-        bonuses = new RecruiterBonuses(address(pool));
+        registry = new RoleRegistry();
+        bonuses = new RecruiterBonuses(address(pool), address(registry));
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(bonuses));
 
         token.mintTokens(address(this), 500_000 ether);

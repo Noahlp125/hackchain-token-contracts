@@ -70,4 +70,50 @@ contract RoleRegistryTest is Test {
         vm.expectRevert(RoleRegistry.InvalidAddress.selector);
         registry.registerRole(address(0), RoleRegistry.BusinessRole.Educator);
     }
+
+    // --- HC-SRC-002: bloqueo de perfil ---
+
+    function test_BlocksProfileCorrectly() public {
+        registry.setBlocked(STRANGER);
+
+        assertTrue(registry.isBlocked(STRANGER), "profile was not blocked");
+    }
+
+    function test_UnblocksProfileCorrectly() public {
+        registry.setBlocked(STRANGER);
+        registry.setUnblocked(STRANGER);
+
+        assertFalse(registry.isBlocked(STRANGER), "profile was not unblocked");
+    }
+
+    function test_RevertsWhenBlockingAlreadyBlockedProfile() public {
+        registry.setBlocked(STRANGER);
+
+        vm.expectRevert(RoleRegistry.AlreadyBlocked.selector);
+        registry.setBlocked(STRANGER);
+    }
+
+    function test_RevertsWhenUnblockingProfileThatIsNotBlocked() public {
+        vm.expectRevert(RoleRegistry.NotBlocked.selector);
+        registry.setUnblocked(STRANGER);
+    }
+
+    function test_RevertsWhenBlockingZeroAddress() public {
+        vm.expectRevert(RoleRegistry.InvalidAddress.selector);
+        registry.setBlocked(address(0));
+    }
+
+    function test_RevertsWhenBlockingWithoutRegistrarRole() public {
+        vm.prank(STRANGER);
+        vm.expectRevert();
+        registry.setBlocked(TALENT);
+    }
+
+    function test_BusinessRolesAreIndependentFromBlockedStatus() public {
+        registry.registerRole(EDUCATOR, RoleRegistry.BusinessRole.Educator);
+        registry.setBlocked(EDUCATOR);
+
+        assertTrue(registry.isEducator(EDUCATOR), "blocking should not revoke business roles");
+        assertTrue(registry.isBlocked(EDUCATOR), "profile should be blocked");
+    }
 }

@@ -2,7 +2,9 @@
 pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title EducatorBonuses
@@ -12,9 +14,13 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * Mechanism 22: First 10 active Talents trained → 10,000 tokens.
  * Mechanism 24: A Talent trained by this educator gets hired → 5,000 tokens.
  * All bonuses verified off-chain by an enforcer before distribution.
+ *
+ * HC-SRC-002 fix: claimLegacyCertsBonus() y claimFirstTalentsBonus()
+ * consultan RoleRegistry.isBlocked(), un perfil bloqueado no puede
+ * reclamar ninguno de los dos incentivos.
  */
-contract EducatorBonuses is AccessControl, ReentrancyGuard {
 
+contract EducatorBonuses is AccessControl, ReentrancyGuard {
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     // ENFORCER_ROLE: verifies conditions off-chain and triggers rewards
@@ -38,6 +44,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
 
     // --- State ---
     address public incentivesPool;
+    IRoleRegistry public roleRegistry;
 
     // Mechanism 20: tracks if educator has received the API integration bonus
     mapping(address => bool) public apiIntegrationRewarded;
@@ -74,25 +81,43 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
     error FirstTalentsAlreadyRewarded();
     error TalentAlreadyActiveUnderEducator();
     error NotEnoughActiveTalents();
+    error ProfileBlocked();
 
     // --- Events ---
     event ApiIntegrationRewarded(address indexed educator, uint256 amount);
-    event LegacyCertRegistered(address indexed educator, address indexed talent, uint256 total);
+    event LegacyCertRegistered(
+        address indexed educator,
+        address indexed talent,
+        uint256 total
+    );
     event LegacyCertsRewarded(address indexed educator, uint256 amount);
-    event TalentRegisteredUnderEducator(address indexed educator, address indexed talent, uint256 total);
-    event TalentBecameInactive(address indexed educator, address indexed talent);
+    event TalentRegisteredUnderEducator(
+        address indexed educator,
+        address indexed talent,
+        uint256 total
+    );
+    event TalentBecameInactive(
+        address indexed educator,
+        address indexed talent
+    );
     event FirstTalentsRewarded(address indexed educator, uint256 amount);
-    event TalentHiredBonus(address indexed educator, address indexed talent, uint256 amount);
+    event TalentHiredBonus(
+        address indexed educator,
+        address indexed talent,
+        uint256 amount
+    );
 
     // --- Constructor ---
     /**
      * @dev Links EducatorBonuses to IncentivesPool.
      * @param incentivesPool_ Address of the deployed IncentivesPool contract.
      */
-    constructor(address incentivesPool_) {
+    constructor(address incentivesPool_, address roleRegistry_) {
         if (incentivesPool_ == address(0)) revert InvalidAddress();
+        if (roleRegistry_ == address(0)) revert InvalidAddress();
 
         incentivesPool = incentivesPool_;
+        roleRegistry = IRoleRegistry(roleRegistry_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
@@ -108,13 +133,12 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      * Can only be triggered once per educator ever.
      * @param educator_ Address of the educator.
      */
-    function rewardApiIntegration(address educator_)
-        external
-        onlyRole(ENFORCER_ROLE)
-        nonReentrant
-    {
+    function rewardApiIntegration(
+        address educator_
+    ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
-        if (apiIntegrationRewarded[educator_]) revert ApiIntegrationAlreadyRewarded();
+        if (apiIntegrationRewarded[educator_])
+            revert ApiIntegrationAlreadyRewarded();
 
         // Mark before external call (CEI pattern)
         apiIntegrationRewarded[educator_] = true;
@@ -138,19 +162,24 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      * @param educator_ Address of the educator.
      * @param talent_ Address of the Talent receiving the legacy certificate.
      */
-    function registerLegacyCert(address educator_, address talent_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function registerLegacyCert(
+        address educator_,
+        address talent_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (educator_ == address(0)) revert InvalidAddress();
         if (talent_ == address(0)) revert InvalidAddress();
         if (legacyCertsRewarded[educator_]) revert LegacyCertsAlreadyRewarded();
-        if (legacyCertIssuedTo[educator_][talent_]) revert LegacyCertAlreadyIssuedToTalent();
+        if (legacyCertIssuedTo[educator_][talent_])
+            revert LegacyCertAlreadyIssuedToTalent();
 
         legacyCertIssuedTo[educator_][talent_] = true;
         legacyCertsCount[educator_] += 1;
 
-        emit LegacyCertRegistered(educator_, talent_, legacyCertsCount[educator_]);
+        emit LegacyCertRegistered(
+            educator_,
+            talent_,
+            legacyCertsCount[educator_]
+        );
     }
 
     /**
@@ -159,7 +188,9 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      * Only claimable once ever.
      */
     function claimLegacyCertsBonus() external nonReentrant {
-        if (legacyCertsRewarded[msg.sender]) revert LegacyCertsAlreadyRewarded();
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (legacyCertsRewarded[msg.sender])
+            revert LegacyCertsAlreadyRewarded();
         if (legacyCertsCount[msg.sender] < LEGACY_CERTS_REQUIRED)
             revert NotEnoughLegacyCerts();
 
@@ -184,19 +215,25 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      * @param educator_ Address of the educator.
      * @param talent_ Address of the active Talent.
      */
-    function registerActiveTalent(address educator_, address talent_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function registerActiveTalent(
+        address educator_,
+        address talent_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (educator_ == address(0)) revert InvalidAddress();
         if (talent_ == address(0)) revert InvalidAddress();
-        if (firstTalentsRewarded[educator_]) revert FirstTalentsAlreadyRewarded();
-        if (talentActiveUnder[educator_][talent_]) revert TalentAlreadyActiveUnderEducator();
+        if (firstTalentsRewarded[educator_])
+            revert FirstTalentsAlreadyRewarded();
+        if (talentActiveUnder[educator_][talent_])
+            revert TalentAlreadyActiveUnderEducator();
 
         talentActiveUnder[educator_][talent_] = true;
         activeTalentsCount[educator_] += 1;
 
-        emit TalentRegisteredUnderEducator(educator_, talent_, activeTalentsCount[educator_]);
+        emit TalentRegisteredUnderEducator(
+            educator_,
+            talent_,
+            activeTalentsCount[educator_]
+        );
     }
 
     /**
@@ -207,10 +244,10 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      * @param educator_ Address of the educator.
      * @param talent_ Address of the Talent who became inactive.
      */
-    function markTalentInactive(address educator_, address talent_)
-        external
-        onlyRole(ENFORCER_ROLE)
-    {
+    function markTalentInactive(
+        address educator_,
+        address talent_
+    ) external onlyRole(ENFORCER_ROLE) {
         if (educator_ == address(0)) revert InvalidAddress();
         if (talent_ == address(0)) revert InvalidAddress();
         if (!talentActiveUnder[educator_][talent_]) return;
@@ -231,7 +268,9 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      * Only claimable once ever.
      */
     function claimFirstTalentsBonus() external nonReentrant {
-        if (firstTalentsRewarded[msg.sender]) revert FirstTalentsAlreadyRewarded();
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (firstTalentsRewarded[msg.sender])
+            revert FirstTalentsAlreadyRewarded();
         if (activeTalentsCount[msg.sender] < FIRST_TALENTS_REQUIRED)
             revert NotEnoughActiveTalents();
 
@@ -257,11 +296,10 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      * @param educator_ Address of the educator to reward.
      * @param talent_ Address of the Talent who was hired.
      */
-    function rewardTalentHired(address educator_, address talent_)
-        external
-        onlyRole(ENFORCER_ROLE)
-        nonReentrant
-    {
+    function rewardTalentHired(
+        address educator_,
+        address talent_
+    ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
         if (talent_ == address(0)) revert InvalidAddress();
 
@@ -281,28 +319,36 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
     /**
      * @notice Returns whether an educator has received the API integration bonus.
      */
-    function hasApiIntegrationBonus(address educator_) external view returns (bool) {
+    function hasApiIntegrationBonus(
+        address educator_
+    ) external view returns (bool) {
         return apiIntegrationRewarded[educator_];
     }
 
     /**
      * @notice Returns the number of legacy certificates registered for an educator.
      */
-    function getLegacyCertsCount(address educator_) external view returns (uint256) {
+    function getLegacyCertsCount(
+        address educator_
+    ) external view returns (uint256) {
         return legacyCertsCount[educator_];
     }
 
     /**
      * @notice Returns the number of active Talents under an educator.
      */
-    function getActiveTalentsCount(address educator_) external view returns (uint256) {
+    function getActiveTalentsCount(
+        address educator_
+    ) external view returns (uint256) {
         return activeTalentsCount[educator_];
     }
 
     /**
      * @notice Returns total hiring bonuses received by an educator.
      */
-    function getHiringBonusCount(address educator_) external view returns (uint256) {
+    function getHiringBonusCount(
+        address educator_
+    ) external view returns (uint256) {
         return hiringBonusCount[educator_];
     }
 
@@ -315,9 +361,24 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
         if (newPool_ == address(0)) revert InvalidAddress();
         incentivesPool = newPool_;
     }
+
+    function setRoleRegistry(
+        address newRegistry_
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newRegistry_ == address(0)) revert InvalidAddress();
+        roleRegistry = IRoleRegistry(newRegistry_);
+    }
 }
 
 // --- Interface ---
 interface IIncentivesPool {
-    function distribute(address to_, uint256 amount_, string calldata reason_) external;
+    function distribute(
+        address to_,
+        uint256 amount_,
+        string calldata reason_
+    ) external;
+}
+
+interface IRoleRegistry {
+    function isBlocked(address account_) external view returns (bool);
 }

@@ -2,9 +2,13 @@
 pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {
+    SafeERC20
+} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title MembershipSystem
@@ -12,6 +16,12 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * Mechanism 3: Advanced features membership — 50,000 tokens/month.
  * Mechanism 13: Academic content membership — monthly/quarterly/annual tiers.
  * Payments are split between IncentivesPool and Treasury.
+ *
+ * HC-SRC-002 fix: activar o renovar cualquier membresia, registrar una
+ * vista y reclamar recompensas de educador consultan
+ * RoleRegistry.isBlocked(), un perfil bloqueado no puede. Se deja
+ * cancelAdvancedMembership() exenta a proposito: es salida + pago de
+ * penalizacion, no reclamacion de incentivo.
  */
 contract MembershipSystem is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -42,7 +52,12 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     uint256 public constant TREASURY_SHARE = 50;
 
     // --- Enums ---
-    enum AcademicTier { None, Monthly, Quarterly, Annual }
+    enum AcademicTier {
+        None,
+        Monthly,
+        Quarterly,
+        Annual
+    }
 
     // --- Structs ---
 
@@ -77,6 +92,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     IERC20 public immutable hackToken;
     address public incentivesPool;
     address public treasury;
+    IRoleRegistry public roleRegistry;
 
     // user => advanced membership info
     mapping(address => AdvancedMembership) public advancedMemberships;
@@ -98,7 +114,8 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     uint256 public currentCycle;
 
     // cycle => viewer => educator => ya contado en este ciclo
-    mapping(uint256 => mapping(address => mapping(address => bool))) public hasCountedView;
+    mapping(uint256 => mapping(address => mapping(address => bool)))
+        public hasCountedView;
 
     // --- Custom Errors ---
     error InvalidAddress();
@@ -111,6 +128,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     error NoPendingRewards();
     error CannotViewOwnContent();
     error ViewAlreadyCounted();
+    error ProfileBlocked();
 
     // --- Events ---
 
@@ -120,7 +138,11 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     event AdvancedMembershipRenewed(address indexed user, uint256 newExpiresAt);
 
     // Mechanism 13
-    event AcademicMembershipActivated(address indexed user, AcademicTier tier, uint256 expiresAt);
+    event AcademicMembershipActivated(
+        address indexed user,
+        AcademicTier tier,
+        uint256 expiresAt
+    );
     event ContentViewed(address indexed user, address indexed educator);
     event EducatorRewardsDistributed(address indexed educator, uint256 amount);
 
@@ -131,14 +153,21 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * @param incentivesPool_ Address of the deployed IncentivesPool contract.
      * @param treasury_ Address of the treasury wallet.
      */
-    constructor(address hackToken_, address incentivesPool_, address treasury_) {
+    constructor(
+        address hackToken_,
+        address incentivesPool_,
+        address treasury_,
+        address roleRegistry_
+    ) {
         if (hackToken_ == address(0)) revert InvalidAddress();
         if (incentivesPool_ == address(0)) revert InvalidAddress();
         if (treasury_ == address(0)) revert InvalidAddress();
+        if (roleRegistry_ == address(0)) revert InvalidAddress();
 
         hackToken = IERC20(hackToken_);
         incentivesPool = incentivesPool_;
         treasury = treasury_;
+        roleRegistry = IRoleRegistry(roleRegistry_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
@@ -152,6 +181,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * User must approve this contract to spend their tokens first.
      */
     function activateAdvancedMembership() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (_isAdvancedActive(msg.sender)) revert MembershipAlreadyActive();
 
         // Transfer tokens from user to this contract
@@ -163,13 +193,17 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         if (!success) revert TransferFailed();
 
         // Split payment
-        uint256 poolAmount = ADVANCED_MEMBERSHIP_COST * POOL_SHARE / 100;
-        uint256 treasuryAmount = ADVANCED_MEMBERSHIP_COST * TREASURY_SHARE / 100;
+        uint256 poolAmount = (ADVANCED_MEMBERSHIP_COST * POOL_SHARE) / 100;
+        uint256 treasuryAmount = (ADVANCED_MEMBERSHIP_COST * TREASURY_SHARE) /
+            100;
 
         // Send to IncentivesPool
         hackToken.safeTransfer(incentivesPool, poolAmount);
         // Notify pool of deposit
-        IIncentivesPool(incentivesPool).deposit(poolAmount, "advanced_membership_fee");
+        IIncentivesPool(incentivesPool).deposit(
+            poolAmount,
+            "advanced_membership_fee"
+        );
 
         // Send to Treasury
         hackToken.safeTransfer(treasury, treasuryAmount);
@@ -212,7 +246,10 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         // Deactivate membership
         membership.active = false;
 
-        emit AdvancedMembershipCancelled(msg.sender, ADVANCED_CANCELLATION_PENALTY);
+        emit AdvancedMembershipCancelled(
+            msg.sender,
+            ADVANCED_CANCELLATION_PENALTY
+        );
     }
 
     /**
@@ -220,6 +257,8 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * @dev Can be called even if membership has expired.
      */
     function renewAdvancedMembership() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+
         // Transfer tokens
         bool success = hackToken.transferFrom(
             msg.sender,
@@ -229,16 +268,21 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         if (!success) revert TransferFailed();
 
         // Split payment
-        uint256 poolAmount = ADVANCED_MEMBERSHIP_COST * POOL_SHARE / 100;
-        uint256 treasuryAmount = ADVANCED_MEMBERSHIP_COST * TREASURY_SHARE / 100;
+        uint256 poolAmount = (ADVANCED_MEMBERSHIP_COST * POOL_SHARE) / 100;
+        uint256 treasuryAmount = (ADVANCED_MEMBERSHIP_COST * TREASURY_SHARE) /
+            100;
 
         hackToken.safeTransfer(incentivesPool, poolAmount);
-        IIncentivesPool(incentivesPool).deposit(poolAmount, "advanced_membership_renewal");
+        IIncentivesPool(incentivesPool).deposit(
+            poolAmount,
+            "advanced_membership_renewal"
+        );
         hackToken.safeTransfer(treasury, treasuryAmount);
 
         // Extend from now if expired, from current expiry if still active
         AdvancedMembership storage membership = advancedMemberships[msg.sender];
-        uint256 base = membership.active && membership.expiresAt > block.timestamp
+        uint256 base = membership.active &&
+            membership.expiresAt > block.timestamp
             ? membership.expiresAt
             : block.timestamp;
 
@@ -257,11 +301,15 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * 50% goes to Treasury, 50% goes to educator reward pool.
      * @param tier_ The membership tier (1=Monthly, 2=Quarterly, 3=Annual).
      */
-    function activateAcademicMembership(AcademicTier tier_) external nonReentrant {
+    function activateAcademicMembership(
+        AcademicTier tier_
+    ) external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (tier_ == AcademicTier.None) revert InvalidTier();
-        if (academicMemberships[msg.sender].tier != AcademicTier.None &&
-            academicMemberships[msg.sender].expiresAt > block.timestamp)
-            revert MembershipAlreadyActive();
+        if (
+            academicMemberships[msg.sender].tier != AcademicTier.None &&
+            academicMemberships[msg.sender].expiresAt > block.timestamp
+        ) revert MembershipAlreadyActive();
 
         // Determine cost and duration based on tier
         (uint256 cost, uint256 duration) = _getTierDetails(tier_);
@@ -271,8 +319,8 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         if (!success) revert TransferFailed();
 
         // Split: 50% treasury, 50% educator pool
-        uint256 treasuryAmount = cost * TREASURY_SHARE / 100;
-        uint256 educatorAmount = cost * POOL_SHARE / 100;
+        uint256 treasuryAmount = (cost * TREASURY_SHARE) / 100;
+        uint256 educatorAmount = (cost * POOL_SHARE) / 100;
 
         hackToken.safeTransfer(treasury, treasuryAmount);
 
@@ -297,14 +345,16 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * @param educator_ Address of the educator whose content was viewed.
      */
     function registerContentView(address educator_) external {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (msg.sender == educator_) revert CannotViewOwnContent();
 
-    // Only active academic members can generate views
+        // Only active academic members can generate views
         AcademicMembership memory membership = academicMemberships[msg.sender];
         if (membership.tier == AcademicTier.None) revert MembershipNotActive();
         if (membership.expiresAt < block.timestamp) revert MembershipExpired();
         if (!hasRole(EDUCATOR_ROLE, educator_)) revert InvalidAddress();
-        if (hasCountedView[currentCycle][msg.sender][educator_]) revert ViewAlreadyCounted();
+        if (hasCountedView[currentCycle][msg.sender][educator_])
+            revert ViewAlreadyCounted();
 
         hasCountedView[currentCycle][msg.sender][educator_] = true;
         educatorViews[educator_].views += 1;
@@ -319,6 +369,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * Share is proportional to their views vs total views this cycle.
      */
     function claimEducatorRewards() external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (!hasRole(EDUCATOR_ROLE, msg.sender)) revert InvalidAddress();
         if (totalViewsThisCycle == 0) revert NoPendingRewards();
 
@@ -326,7 +377,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         if (ev.views == 0) revert NoPendingRewards();
 
         // Calculate proportional reward
-        uint256 reward = pendingEducatorPool * ev.views / totalViewsThisCycle;
+        uint256 reward = (pendingEducatorPool * ev.views) / totalViewsThisCycle;
         if (reward == 0) revert NoPendingRewards();
 
         // Reset views before transfer (CEI pattern)
@@ -360,7 +411,9 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     /**
      * @notice Returns the academic membership tier of a user.
      */
-    function getAcademicTier(address user_) external view returns (AcademicTier) {
+    function getAcademicTier(
+        address user_
+    ) external view returns (AcademicTier) {
         return academicMemberships[user_].tier;
     }
 
@@ -369,25 +422,26 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     /**
      * @dev Returns cost and duration for a given academic tier.
      */
-    function _getTierDetails(AcademicTier tier_)
-        internal
-        pure
-        returns (uint256 cost, uint256 duration)
-    {
-        if (tier_ == AcademicTier.Monthly) return (ACADEMIC_MONTHLY_COST, ACADEMIC_MONTHLY_DURATION);
-        if (tier_ == AcademicTier.Quarterly) return (ACADEMIC_QUARTERLY_COST, ACADEMIC_QUARTERLY_DURATION);
-        if (tier_ == AcademicTier.Annual) return (ACADEMIC_ANNUAL_COST, ACADEMIC_ANNUAL_DURATION);
+    function _getTierDetails(
+        AcademicTier tier_
+    ) internal pure returns (uint256 cost, uint256 duration) {
+        if (tier_ == AcademicTier.Monthly)
+            return (ACADEMIC_MONTHLY_COST, ACADEMIC_MONTHLY_DURATION);
+        if (tier_ == AcademicTier.Quarterly)
+            return (ACADEMIC_QUARTERLY_COST, ACADEMIC_QUARTERLY_DURATION);
+        if (tier_ == AcademicTier.Annual)
+            return (ACADEMIC_ANNUAL_COST, ACADEMIC_ANNUAL_DURATION);
         revert InvalidTier();
     }
     /**
- * @dev Fuente de verdad única para saber si una membresía avanzada está
- * realmente activa (activa Y no expirada). Evita el desajuste entre
- * el booleano `active` y `expiresAt` señalado en L-03.
- */
+     * @dev Fuente de verdad única para saber si una membresía avanzada está
+     * realmente activa (activa Y no expirada). Evita el desajuste entre
+     * el booleano `active` y `expiresAt` señalado en L-03.
+     */
     function _isAdvancedActive(address user_) internal view returns (bool) {
         AdvancedMembership storage m = advancedMemberships[user_];
         return m.active && m.expiresAt > block.timestamp;
-}
+    }
 
     // --- Admin ---
 
@@ -406,19 +460,34 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         if (newTreasury_ == address(0)) revert InvalidAddress();
         treasury = newTreasury_;
     }
+
+    function setRoleRegistry(
+        address newRegistry_
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newRegistry_ == address(0)) revert InvalidAddress();
+        roleRegistry = IRoleRegistry(newRegistry_);
+    }
     /**
- * @notice Avanza al siguiente ciclo de distribución de vistas académicas.
- * @dev Permite que los espectadores vuelvan a generar vistas contables
- * para el mismo educador. Debe llamarse tras cada distribución completa
- * del pool (p.ej. mensualmente), no arbitrariamente.
- */
-function advanceCycle() external onlyRole(ADMIN_ROLE) {
-    currentCycle += 1;
-}
+     * @notice Avanza al siguiente ciclo de distribución de vistas académicas.
+     * @dev Permite que los espectadores vuelvan a generar vistas contables
+     * para el mismo educador. Debe llamarse tras cada distribución completa
+     * del pool (p.ej. mensualmente), no arbitrariamente.
+     */
+    function advanceCycle() external onlyRole(ADMIN_ROLE) {
+        currentCycle += 1;
+    }
 }
 
 // --- Interfaces ---
 interface IIncentivesPool {
-    function distribute(address to_, uint256 amount_, string calldata reason_) external;
+    function distribute(
+        address to_,
+        uint256 amount_,
+        string calldata reason_
+    ) external;
     function deposit(uint256 amount_, string calldata reason_) external;
+}
+
+interface IRoleRegistry {
+    function isBlocked(address account_) external view returns (bool);
 }

@@ -2,7 +2,9 @@
 pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title ReputationBonuses
@@ -11,9 +13,12 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * An enforcer registers the winner on-chain.
  * The winner has 3 days to claim from their dashboard.
  * Unclaimed bonuses return to IncentivesPool.
+ *
+ * HC-SRC-002 fix: claimBonus() consulta RoleRegistry.isBlocked(), un
+ * perfil bloqueado no puede reclamar el incentivo.
  */
-contract ReputationBonuses is AccessControl, ReentrancyGuard {
 
+contract ReputationBonuses is AccessControl, ReentrancyGuard {
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     // ENFORCER_ROLE: registers monthly winners after off-chain reputation calculation
@@ -24,21 +29,26 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
     uint256 public constant CLAIM_WINDOW = 3 days;
 
     // --- Enums ---
-    enum UserRole { Talent, Educator, Recruiter }
+    enum UserRole {
+        Talent,
+        Educator,
+        Recruiter
+    }
 
     // --- Structs ---
     /**
      * @dev Represents a monthly bonus assigned to a winner.
      */
     struct MonthlyBonus {
-        address winner;       // who won this month
+        address winner; // who won this month
         uint256 registeredAt; // when the enforcer registered the winner
-        bool claimed;         // whether the bonus has been claimed
-        bool returned;        // whether unclaimed tokens were returned to pool
+        bool claimed; // whether the bonus has been claimed
+        bool returned; // whether unclaimed tokens were returned to pool
     }
 
     // --- State ---
     address public incentivesPool;
+    IRoleRegistry public roleRegistry;
 
     // role => month => bonus info
     // month calculated as block.timestamp / 30 days
@@ -57,21 +67,36 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
     error AlreadyReturned();
     error NotTheWinner();
     error TransferFailed();
+    error ProfileBlocked();
 
     // --- Events ---
-    event WinnerRegistered(UserRole indexed role, address indexed winner, uint256 month);
-    event BonusClaimed(UserRole indexed role, address indexed winner, uint256 amount);
-    event BonusReturnedToPool(UserRole indexed role, uint256 month, uint256 amount);
+    event WinnerRegistered(
+        UserRole indexed role,
+        address indexed winner,
+        uint256 month
+    );
+    event BonusClaimed(
+        UserRole indexed role,
+        address indexed winner,
+        uint256 amount
+    );
+    event BonusReturnedToPool(
+        UserRole indexed role,
+        uint256 month,
+        uint256 amount
+    );
 
     // --- Constructor ---
     /**
      * @dev Links ReputationBonuses to IncentivesPool.
      * @param incentivesPool_ Address of the deployed IncentivesPool contract.
      */
-    constructor(address incentivesPool_) {
+    constructor(address incentivesPool_, address roleRegistry_) {
         if (incentivesPool_ == address(0)) revert InvalidAddress();
+        if (roleRegistry_ == address(0)) revert InvalidAddress();
 
         incentivesPool = incentivesPool_;
+        roleRegistry = IRoleRegistry(roleRegistry_);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
@@ -96,7 +121,8 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
         uint256 currentMonth = block.timestamp / 30 days;
 
         // Prevent registering twice in the same month for the same role
-        if (lastRegisteredMonth[role_] == currentMonth) revert WinnerAlreadyRegistered();
+        if (lastRegisteredMonth[role_] == currentMonth)
+            revert WinnerAlreadyRegistered();
 
         lastRegisteredMonth[role_] = currentMonth;
 
@@ -127,6 +153,8 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
      * (devuelto por WinnerRegistered o consultable off-chain).
      */
     function claimBonus(UserRole role_, uint256 month_) external nonReentrant {
+        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+
         MonthlyBonus storage bonus = monthlyBonuses[role_][month_];
 
         // Check bonus exists for this month
@@ -142,7 +170,8 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
         if (bonus.returned) revert AlreadyReturned();
 
         // Check within 3-day claim window, medido siempre desde registeredAt
-        if (block.timestamp > bonus.registeredAt + CLAIM_WINDOW) revert ClaimWindowExpired();
+        if (block.timestamp > bonus.registeredAt + CLAIM_WINDOW)
+            revert ClaimWindowExpired();
 
         // Mark as claimed before external call (CEI pattern)
         bonus.claimed = true;
@@ -164,7 +193,10 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
      * @param role_ The role whose unclaimed bonus should be returned.
      * @param month_ The month to process (block.timestamp / 30 days).
      */
-    function returnUnclaimedBonus(UserRole role_, uint256 month_) external nonReentrant {
+    function returnUnclaimedBonus(
+        UserRole role_,
+        uint256 month_
+    ) external nonReentrant {
         MonthlyBonus storage bonus = monthlyBonuses[role_][month_];
 
         // Check bonus exists
@@ -175,7 +207,8 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
         if (bonus.returned) revert AlreadyReturned();
 
         // Check claim window has expired
-        if (block.timestamp <= bonus.registeredAt + CLAIM_WINDOW) revert ClaimWindowStillOpen();
+        if (block.timestamp <= bonus.registeredAt + CLAIM_WINDOW)
+            revert ClaimWindowStillOpen();
 
         // Mark as returned before external call (CEI pattern)
         bonus.returned = true;
@@ -208,7 +241,10 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
     /**
      * @notice Returns whether the claim window is still open for a given role.
      */
-    function isClaimWindowOpen(UserRole role_, uint256 month_) external view returns (bool) {
+    function isClaimWindowOpen(
+        UserRole role_,
+        uint256 month_
+    ) external view returns (bool) {
         MonthlyBonus memory bonus = monthlyBonuses[role_][month_];
         if (bonus.winner == address(0)) return false;
         return block.timestamp <= bonus.registeredAt + CLAIM_WINDOW;
@@ -228,7 +264,9 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
      * @dev Returns a human-readable reason string for each role.
      * Used in IncentivesPool distribute() call for tracking.
      */
-    function _reasonForRole(UserRole role_) internal pure returns (string memory) {
+    function _reasonForRole(
+        UserRole role_
+    ) internal pure returns (string memory) {
         if (role_ == UserRole.Talent) return "reputation_bonus_talent";
         if (role_ == UserRole.Educator) return "reputation_bonus_educator";
         return "reputation_bonus_recruiter";
@@ -243,9 +281,24 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
         if (newPool_ == address(0)) revert InvalidAddress();
         incentivesPool = newPool_;
     }
+
+    function setRoleRegistry(
+        address newRegistry_
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newRegistry_ == address(0)) revert InvalidAddress();
+        roleRegistry = IRoleRegistry(newRegistry_);
+    }
 }
 
 // --- Interface ---
 interface IIncentivesPool {
-    function distribute(address to_, uint256 amount_, string calldata reason_) external;
+    function distribute(
+        address to_,
+        uint256 amount_,
+        string calldata reason_
+    ) external;
+}
+
+interface IRoleRegistry {
+    function isBlocked(address account_) external view returns (bool);
 }
