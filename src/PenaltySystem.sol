@@ -23,6 +23,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * escribe/lee el bloqueo a través de RoleRegistry (requiere REGISTRAR_ROLE
  * concedido a esta dirección), que es ahora la fuente única que deben
  * consultar el resto de módulos.
+ *
+ * HC-SRC-003 fix: las penalizaciones porcentuales ya no leen
+ * hackToken.balanceOf() en el momento de la ejecución. El enforcer aporta
+ * un balance de evidencia (verificado off-chain en el momento de la
+ * infracción) y el contrato calcula el porcentaje sobre ese valor. Mover
+ * tokens después de la infracción ya no reduce ni evita la sanción.
  */
 contract PenaltySystem is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -149,15 +155,17 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
      * @notice Apply identity fraud penalty (mechanism 7).
      * @param caseId_ Identificador único del caso, evita el reprocesado.
      * @param user_ Address of the offending user.
+     * @param evidenceBalance_ Balance del usuario verificado off-chain en
+     * el momento de la infracción (HC-SRC-003). No se lee balanceOf().
      */
     function applyIdentityFraudPenalty(
         bytes32 caseId_,
-        address user_
+        address user_,
+        uint256 evidenceBalance_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (user_ == address(0)) revert InvalidAddress();
 
-        uint256 balance = hackToken.balanceOf(user_);
-        uint256 penalty = (balance * IDENTITY_FRAUD_PENALTY_PERCENT) / 100;
+        uint256 penalty = (evidenceBalance_ * IDENTITY_FRAUD_PENALTY_PERCENT) / 100;
         if (penalty == 0) revert AmountMustBeGreaterThanZero();
 
         _recordPenalty(
@@ -173,27 +181,28 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
 
     /**
      * @notice Apply mass token sale penalty (mechanism 9).
-     * @dev NOTA: sigue leyendo balanceOf() en el momento de ejecución (H-05
-     * no resuelto del todo). Un usuario puede mover fondos antes de que el
-     * enforcer llame a esta función. Pendiente de snapshot firmado.
+     * @dev HC-SRC-003 fix: holdingsBeforeSale_ sustituye a balanceOf(),
+     * verificado off-chain por el enforcer justo antes de la venta. Ya no
+     * depende de lo que el usuario haga con sus tokens después.
+     * @param holdingsBeforeSale_ Balance del usuario inmediatamente antes
+     * de la venta masiva evidenciada.
      */
     function applyMassSalePenalty(
         bytes32 caseId_,
         address user_,
         uint256 saleAmount_,
+        uint256 holdingsBeforeSale_,
         uint256 circulatingSupply_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (user_ == address(0)) revert InvalidAddress();
         if (saleAmount_ == 0) revert AmountMustBeGreaterThanZero();
 
-        uint256 balance = hackToken.balanceOf(user_);
-
         require(
-            balance * 100 >= circulatingSupply_ * MASS_SALE_SUPPLY_THRESHOLD,
+            holdingsBeforeSale_ * 100 >= circulatingSupply_ * MASS_SALE_SUPPLY_THRESHOLD,
             "User does not hold 1% of supply"
         );
         require(
-            saleAmount_ * 100 >= balance * MASS_SALE_THRESHOLD_PERCENT,
+            saleAmount_ * 100 >= holdingsBeforeSale_ * MASS_SALE_THRESHOLD_PERCENT,
             "Sale does not exceed 50% of holdings"
         );
 
@@ -213,15 +222,17 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
 
     /**
      * @notice Apply no-show interview penalty (mechanism 14).
+     * @param evidenceBalance_ Balance del usuario verificado off-chain en
+     * el momento de la infracción (HC-SRC-003).
      */
     function applyNoShowPenalty(
         bytes32 caseId_,
-        address user_
+        address user_,
+        uint256 evidenceBalance_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (user_ == address(0)) revert InvalidAddress();
 
-        uint256 balance = hackToken.balanceOf(user_);
-        uint256 penalty = (balance * NO_SHOW_PENALTY_PERCENT) / 100;
+        uint256 penalty = (evidenceBalance_ * NO_SHOW_PENALTY_PERCENT) / 100;
         if (penalty == 0) revert AmountMustBeGreaterThanZero();
 
         _recordPenalty(
@@ -237,15 +248,17 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
 
     /**
      * @notice Apply educator inactivity penalty (mechanism 25).
+     * @param evidenceBalance_ Balance del educador verificado off-chain en
+     * el momento de la infracción (HC-SRC-003).
      */
     function applyEducatorInactivityPenalty(
         bytes32 caseId_,
-        address educator_
+        address educator_,
+        uint256 evidenceBalance_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
 
-        uint256 balance = hackToken.balanceOf(educator_);
-        uint256 penalty = (balance * EDUCATOR_INACTIVITY_PENALTY_PERCENT) / 100;
+        uint256 penalty = (evidenceBalance_ * EDUCATOR_INACTIVITY_PENALTY_PERCENT) / 100;
         if (penalty == 0) revert AmountMustBeGreaterThanZero();
 
         _recordPenalty(
@@ -263,18 +276,20 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
      * @notice Apply plagiarism penalty (mechanism 26).
      * @dev External: el pago se registra hacia Treasury. Internal: se
      * registra directamente hacia el educador afectado.
+     * @param evidenceBalance_ Balance del infractor verificado off-chain en
+     * el momento de la infracción (HC-SRC-003).
      */
     function applyPlagiarismPenalty(
         bytes32 caseId_,
         address offender_,
         address affected_,
-        bool isExternal_
+        bool isExternal_,
+        uint256 evidenceBalance_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (offender_ == address(0)) revert InvalidAddress();
         if (affected_ == address(0)) revert InvalidAddress();
 
-        uint256 balance = hackToken.balanceOf(offender_);
-        uint256 penalty = (balance * PLAGIARISM_PENALTY_PERCENT) / 100;
+        uint256 penalty = (evidenceBalance_ * PLAGIARISM_PENALTY_PERCENT) / 100;
         if (penalty == 0) revert AmountMustBeGreaterThanZero();
 
         address destination = isExternal_ ? treasury : affected_;
@@ -292,15 +307,17 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
 
     /**
      * @notice Apply recruiter inactivity penalty (mechanism 30).
+     * @param evidenceBalance_ Balance del recruiter verificado off-chain en
+     * el momento de la infracción (HC-SRC-003).
      */
     function applyRecruiterInactivityPenalty(
         bytes32 caseId_,
-        address recruiter_
+        address recruiter_,
+        uint256 evidenceBalance_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (recruiter_ == address(0)) revert InvalidAddress();
 
-        uint256 balance = hackToken.balanceOf(recruiter_);
-        uint256 penalty = (balance * RECRUITER_INACTIVITY_PENALTY_PERCENT) /
+        uint256 penalty = (evidenceBalance_ * RECRUITER_INACTIVITY_PENALTY_PERCENT) /
             100;
         if (penalty == 0) revert AmountMustBeGreaterThanZero();
 

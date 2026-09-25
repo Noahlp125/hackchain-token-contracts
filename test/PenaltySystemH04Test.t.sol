@@ -40,7 +40,7 @@ contract PenaltySystemH04Test is Test {
         bytes32 caseId = keccak256("case-001");
 
         // Nótese: no hay ningún token.approve() aquí.
-        penalties.applyEducatorInactivityPenalty(caseId, USER);
+        penalties.applyEducatorInactivityPenalty(caseId, USER, 10_000 ether);
 
         assertTrue(penalties.isProfileBlocked(USER), "profile was not blocked without allowance");
         assertEq(penalties.penaltyDebt(USER), 500 ether, "debt was not recorded (5% of 10,000)");
@@ -49,15 +49,15 @@ contract PenaltySystemH04Test is Test {
 
     function test_H04_CaseCannotBeReplayed() public {
         bytes32 caseId = keccak256("case-002");
-        penalties.applyEducatorInactivityPenalty(caseId, USER);
+        penalties.applyEducatorInactivityPenalty(caseId, USER, 10_000 ether);
 
         vm.expectRevert(PenaltySystem.CaseAlreadyProcessed.selector);
-        penalties.applyEducatorInactivityPenalty(caseId, USER);
+        penalties.applyEducatorInactivityPenalty(caseId, USER, 10_000 ether);
     }
 
     function test_H04_UserCanSettleDebtAndGetUnblocked() public {
         bytes32 caseId = keccak256("case-003");
-        penalties.applyEducatorInactivityPenalty(caseId, USER);
+        penalties.applyEducatorInactivityPenalty(caseId, USER, 10_000 ether);
 
         assertTrue(penalties.isProfileBlocked(USER), "profile should be blocked");
 
@@ -73,7 +73,7 @@ contract PenaltySystemH04Test is Test {
 
     function test_H04_CannotSettleSomeoneElsesCase() public {
         bytes32 caseId = keccak256("case-004");
-        penalties.applyEducatorInactivityPenalty(caseId, USER);
+        penalties.applyEducatorInactivityPenalty(caseId, USER, 10_000 ether);
 
         vm.startPrank(EDUCATOR_A);
         token.approve(address(penalties), 500 ether);
@@ -84,7 +84,7 @@ contract PenaltySystemH04Test is Test {
 
     function test_H04_CannotSettleTwice() public {
         bytes32 caseId = keccak256("case-005");
-        penalties.applyEducatorInactivityPenalty(caseId, USER);
+        penalties.applyEducatorInactivityPenalty(caseId, USER, 10_000 ether);
 
         vm.startPrank(USER);
         token.approve(address(penalties), 1_000 ether);
@@ -101,9 +101,9 @@ contract PenaltySystemH04Test is Test {
         bytes32 caseId1 = keccak256("case-006a");
         bytes32 caseId2 = keccak256("case-006b");
 
-        penalties.applyEducatorInactivityPenalty(caseId1, USER);
+        penalties.applyEducatorInactivityPenalty(caseId1, USER, 10_000 ether);
         // segunda infracción, aplicada tras la primera
-        penalties.applyRecruiterInactivityPenalty(caseId2, USER);
+        penalties.applyRecruiterInactivityPenalty(caseId2, USER, 10_000 ether);
 
         assertEq(penalties.penaltyDebt(USER), 1_000 ether, "expected 500 + 500, both penalties calculated on the same untouched 10,000 balance");
 
@@ -121,7 +121,7 @@ contract PenaltySystemH04Test is Test {
 
     function test_H04_PlagiarismInternalGoesDirectlyToAffectedEducator() public {
         bytes32 caseId = keccak256("case-007");
-        penalties.applyPlagiarismPenalty(caseId, EDUCATOR_A, EDUCATOR_B, false);
+        penalties.applyPlagiarismPenalty(caseId, EDUCATOR_A, EDUCATOR_B, false, 10_000 ether);
 
         vm.startPrank(EDUCATOR_A);
         token.approve(address(penalties), 1_000 ether);
