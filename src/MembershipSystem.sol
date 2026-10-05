@@ -22,14 +22,18 @@ import {
  * RoleRegistry.isBlocked(), un perfil bloqueado no puede. Se deja
  * cancelAdvancedMembership() exenta a proposito: es salida + pago de
  * penalizacion, no reclamacion de incentivo.
+ *
+ * HC-SRC-004 fix: el EDUCATOR_ROLE local (AccessControl) desaparece.
+ * registerContentView() y claimEducatorRewards() consultan
+ * RoleRegistry.isEducator() en su lugar, para que revocar a un educador
+ * en RoleRegistry tenga efecto inmediato aqui tambien, sin un rol
+ * paralelo que se pueda olvidar sincronizar.
  */
 contract MembershipSystem is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // --- Roles ---
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    // EDUCATOR_ROLE: assigned to verified educators to register content views
-    bytes32 public constant EDUCATOR_ROLE = keccak256("EDUCATOR_ROLE");
 
     // --- Constants ---
 
@@ -129,6 +133,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     error CannotViewOwnContent();
     error ViewAlreadyCounted();
     error ProfileBlocked();
+    error NotEducator();
 
     // --- Events ---
 
@@ -341,7 +346,8 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     /**
      * @notice Register a content view for an educator.
      * @dev Called by the platform when a member watches an educator's content.
-     * Only accounts with EDUCATOR_ROLE can be registered as content creators.
+     * Only addresses registered as Educator in RoleRegistry can be
+     * registered as content creators.
      * @param educator_ Address of the educator whose content was viewed.
      */
     function registerContentView(address educator_) external {
@@ -352,7 +358,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         AcademicMembership memory membership = academicMemberships[msg.sender];
         if (membership.tier == AcademicTier.None) revert MembershipNotActive();
         if (membership.expiresAt < block.timestamp) revert MembershipExpired();
-        if (!hasRole(EDUCATOR_ROLE, educator_)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
         if (hasCountedView[currentCycle][msg.sender][educator_])
             revert ViewAlreadyCounted();
 
@@ -370,7 +376,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      */
     function claimEducatorRewards() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
-        if (!hasRole(EDUCATOR_ROLE, msg.sender)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(msg.sender)) revert NotEducator();
         if (totalViewsThisCycle == 0) revert NoPendingRewards();
 
         EducatorViews storage ev = educatorViews[msg.sender];
@@ -490,4 +496,5 @@ interface IIncentivesPool {
 
 interface IRoleRegistry {
     function isBlocked(address account_) external view returns (bool);
+    function isEducator(address account_) external view returns (bool);
 }
