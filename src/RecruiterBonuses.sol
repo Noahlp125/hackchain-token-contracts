@@ -23,6 +23,10 @@ import {
  * HC-SRC-002 fix: claimRegistrationBonus(), claimMonthlyHiringBonus() y
  * claimKycBonus() consultan RoleRegistry.isBlocked(), un perfil
  * bloqueado no puede reclamar ninguno de los tres bonos.
+ *
+ * HC-SRC-007 fix: registerHiring() y claimMonthlyHiringBonus() eran las
+ * unicas funciones del contrato que no exigian isRegistered. Una cuenta
+ * no registrada podia acumular contrataciones y cobrar el bono mensual.
  */
 contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -210,6 +214,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
         bytes32 talentId_
     ) external onlyRole(ENFORCER_ROLE) {
         if (recruiter_ == address(0)) revert InvalidAddress();
+        if (!isRegistered[recruiter_]) revert NotRegistered();
 
         uint256 currentMonth = block.timestamp / 30 days;
         MonthlyHiring storage hiring = monthlyHiring[recruiter_];
@@ -232,6 +237,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
 
     function claimMonthlyHiringBonus() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (!isRegistered[msg.sender]) revert NotRegistered();
 
         uint256 currentMonth = block.timestamp / 30 days;
         MonthlyHiring storage hiring = monthlyHiring[msg.sender];
