@@ -18,6 +18,12 @@ import {
  * HC-SRC-002 fix: claimLegacyCertsBonus() y claimFirstTalentsBonus()
  * consultan RoleRegistry.isBlocked(), un perfil bloqueado no puede
  * reclamar ninguno de los dos incentivos.
+ *
+ * HC-SRC-004 fix: este contrato confiaba por completo en que ENFORCER_ROLE
+ * mandara la address correcta, sin comprobar en ningun punto que el
+ * destinatario fuera realmente un Educador segun RoleRegistry. Las 6
+ * funciones que registran o pagan un bono de educador ahora exigen
+ * RoleRegistry.isEducator() sobre el educador en cuestion.
  */
 
 contract EducatorBonuses is AccessControl, ReentrancyGuard {
@@ -82,6 +88,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
     error TalentAlreadyActiveUnderEducator();
     error NotEnoughActiveTalents();
     error ProfileBlocked();
+    error NotEducator();
 
     // --- Events ---
     event ApiIntegrationRewarded(address indexed educator, uint256 amount);
@@ -137,6 +144,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
         address educator_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
         if (apiIntegrationRewarded[educator_])
             revert ApiIntegrationAlreadyRewarded();
 
@@ -168,6 +176,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
     ) external onlyRole(ENFORCER_ROLE) {
         if (educator_ == address(0)) revert InvalidAddress();
         if (talent_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
         if (legacyCertsRewarded[educator_]) revert LegacyCertsAlreadyRewarded();
         if (legacyCertIssuedTo[educator_][talent_])
             revert LegacyCertAlreadyIssuedToTalent();
@@ -189,6 +198,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      */
     function claimLegacyCertsBonus() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (!roleRegistry.isEducator(msg.sender)) revert NotEducator();
         if (legacyCertsRewarded[msg.sender])
             revert LegacyCertsAlreadyRewarded();
         if (legacyCertsCount[msg.sender] < LEGACY_CERTS_REQUIRED)
@@ -221,6 +231,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
     ) external onlyRole(ENFORCER_ROLE) {
         if (educator_ == address(0)) revert InvalidAddress();
         if (talent_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
         if (firstTalentsRewarded[educator_])
             revert FirstTalentsAlreadyRewarded();
         if (talentActiveUnder[educator_][talent_])
@@ -269,6 +280,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
      */
     function claimFirstTalentsBonus() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (!roleRegistry.isEducator(msg.sender)) revert NotEducator();
         if (firstTalentsRewarded[msg.sender])
             revert FirstTalentsAlreadyRewarded();
         if (activeTalentsCount[msg.sender] < FIRST_TALENTS_REQUIRED)
@@ -302,6 +314,7 @@ contract EducatorBonuses is AccessControl, ReentrancyGuard {
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
         if (talent_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
 
         hiringBonusCount[educator_] += 1;
 
@@ -381,4 +394,5 @@ interface IIncentivesPool {
 
 interface IRoleRegistry {
     function isBlocked(address account_) external view returns (bool);
+    function isEducator(address account_) external view returns (bool);
 }
