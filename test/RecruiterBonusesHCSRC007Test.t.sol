@@ -23,6 +23,10 @@ contract RecruiterBonusesHCSRC007Test is Test {
         registry = new RoleRegistry();
         bonuses = new RecruiterBonuses(address(pool), address(registry));
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(bonuses));
+        // Recruiter en RoleRegistry desde el inicio: estos tests aislan la
+        // falta de isRegistered, no la del rol global (ver HCSRC004).
+        registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        registry.registerRole(RECRUITER, RoleRegistry.BusinessRole.Recruiter);
 
         token.mintTokens(address(this), 100_000 ether);
         token.approve(address(pool), 100_000 ether);
