@@ -22,7 +22,7 @@ contract PenaltySystemH04Test is Test {
     address EDUCATOR_B = makeAddr("educatorB");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new MockIncentivesPool();
         registry = new RoleRegistry();
         penalties = new PenaltySystem(address(token), address(pool), TREASURY, address(registry));

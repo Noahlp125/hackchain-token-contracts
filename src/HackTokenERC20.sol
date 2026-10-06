@@ -2,61 +2,131 @@
 pragma solidity 0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {
+    ERC20Burnable
+} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import {
+    ERC20Pausable
+} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
 /**
  * @title HackToken
- * @dev ERC20 token with pausable transfers, role-based minting and burning,
- * and ownership transfer. Uses OpenZeppelin for security and standard compliance.
+ * @dev ERC20 token with pausable transfers, role-gated minting and
+ * holder-driven burning. Uses OpenZeppelin for security and standard
+ * compliance.
+ *
+ * Burning follows the ERC20Burnable standard: a holder destroys their own
+ * balance with burn(), and a third party can only burn on their behalf through
+ * burnFrom(), after the holder has granted an allowance. There is no
+ * administrative burn, penalties are settled by transfer in PenaltySystem,
+ * and enforcement comes from profile blocking, not from confiscation.
+ *
+ * Administration has a single source of truth. There is no Ownable layer: this
+ * contract inherits AccessControlDefaultAdminRules, under which owner() is a
+ * view over defaultAdmin() as defined by ERC-5313, so ownership and
+ * administrative control cannot diverge. DEFAULT_ADMIN_ROLE is held by exactly
+ * one account, cannot be granted or revoked directly, and moves only through
+ * beginDefaultAdminTransfer() followed, after ADMIN_TRANSFER_DELAY, by
+ * acceptDefaultAdminTransfer() called by the incoming admin. The outgoing admin
+ * can cancel at any point before acceptance.
+ *
+ * MINTER_ROLE and PAUSER_ROLE are ordinary roles and are not carried by that
+ * transfer. They are granted to the initial admin at deployment as a bootstrap
+ * step only: MINTER_ROLE is meant to end up held by the contracts that mint
+ * (StakingContract, IncentivesPool, the presale contract) and the initial
+ * admin's copy must be revoked once those exist. A handover of administration
+ * is therefore not complete until the incoming admin has also reviewed who
+ * holds these two roles.
  */
-contract HackToken is ERC20, Pausable, Ownable, AccessControl {
-
+contract HackToken is
+    ERC20,
+    ERC20Burnable,
+    ERC20Pausable,
+    AccessControlDefaultAdminRules
+{
     // --- Roles ---
-    // CHANGE 3: Define roles as bytes32 constants
-    // keccak256 is the standard way to create a unique identifier for each role
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
+    /// @dev Waiting period between scheduling a transfer of DEFAULT_ADMIN_ROLE
+    /// and the incoming admin being able to accept it. It is the window in which
+    /// a hostile transfer can be spotted and cancelled. Fixed in code rather than
+    /// taken as a constructor argument so that no deployment can weaken it by
+    /// mistake, it can still be changed later through changeDefaultAdminDelay(),
+    /// which is itself subject to the extension's own scheduling rules.
+    uint48 public constant ADMIN_TRANSFER_DELAY = 3 days;
+
     // --- Variables ---
-    uint256 public maxSupply = 1000000000 * (10 ** decimals());
+    /// @notice Hard cap on the tokens this contract will ever mint.
+    /// @dev This is a LIFETIME issuance cap, not a cap on circulating supply.
+    /// Burning does not free headroom: destroyed tokens are gone and are never
+    /// reissued.
+    ///
+    /// The project's tokenomics allocate the whole 1,000,000,000 across closed
+    /// buckets, team, private sale, public presale, public sale, incentives,
+    /// treasury and airdrops, summing to 100%. A token minted to replace a
+    /// burned one would belong to no bucket, and those percentages would stop
+    /// describing anything.
+    ///
+    /// Reaching the cap is the intended end state, not a failure: minting stops,
+    /// and rewards keep being paid out of the pre-allocated incentives bucket,
+    /// which recycles existing tokens through IncentivesPool rather than
+    /// creating new ones.
+    uint256 public immutable maxSupply;
+
+    /// @notice Total HACK minted since deployment. Only ever increases.
+    /// @dev Deliberately never decremented by burns — see {maxSupply}.
+    /// Integrators after circulating supply want totalSupply(), not this.
     uint256 public mintedTokens;
 
     // --- Custom Errors ---
     error AmountMustBeGreaterThanZero();
     error InvalidAddress();
     error MaxSupplyExceeded();
-    error InsufficientBalance();
 
     // --- Constructor ---
     /**
      * @dev Deploys the HackToken contract.
-     * CHANGE 4: The deployer receives all roles automatically.
-     * Roles can later be assigned to other contracts using grantRole().
+     * @param initialAdmin_ Account that receives DEFAULT_ADMIN_ROLE, MINTER_ROLE
+     * and PAUSER_ROLE. Intended to be the project multisig, never the deploying
+     * key: the deployer holds nothing once this constructor returns. A zero
+     * address is rejected by AccessControlDefaultAdminRules.
      */
-    constructor() ERC20("Hack Chain Token", "HACK") Ownable(msg.sender) {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender); // can assign and revoke roles
-        _grantRole(MINTER_ROLE, msg.sender);
-        _grantRole(BURNER_ROLE, msg.sender);
-        _grantRole(PAUSER_ROLE, msg.sender);
+    constructor(
+        address initialAdmin_
+    )
+        ERC20("Hack Chain Token", "HACK")
+        AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, initialAdmin_)
+    {
+        maxSupply = 1000000000 * (10 ** decimals());
+
+        _grantRole(MINTER_ROLE, initialAdmin_);
+        _grantRole(PAUSER_ROLE, initialAdmin_);
     }
 
     // --- Events ---
-    event TransferNewOwner(address indexed previousOwner, address indexed newOwner);
-    event TokenMinted(address to, uint256 amount);
-    event TokenBurned(address indexed from, uint256 amount);
+    event TokenMinted(address indexed to, uint256 amount);
 
     // --- External functions ---
 
     /**
      * @notice Mints new tokens to a specified address.
-     * CHANGE 5: onlyOwner → onlyRole(MINTER_ROLE)
-     * StakingContract and IncentivesPool will be able to mint rewards
-     * once the owner grants them MINTER_ROLE.
+     * @dev Gated by MINTER_ROLE. The cap is checked against mintedTokens, the
+     * lifetime issuance counter, and not against totalSupply(): burning does not
+     * give minting headroom back. See {maxSupply} for the reasoning.
+     *
+     * Minting is blocked while the contract is paused. The modifier is not
+     * repeated here on purpose: _update() already enforces it through
+     * ERC20Pausable, and declaring it again would duplicate that check on every
+     * mint for no gain.
      */
-    function mintTokens(address to_, uint256 amount_) public onlyRole(MINTER_ROLE) {
+    function mintTokens(
+        address to_,
+        uint256 amount_
+    ) public onlyRole(MINTER_ROLE) {
         if (to_ == address(0)) revert InvalidAddress();
         if (amount_ == 0) revert AmountMustBeGreaterThanZero();
         if (mintedTokens + amount_ > maxSupply) revert MaxSupplyExceeded();
@@ -67,33 +137,16 @@ contract HackToken is ERC20, Pausable, Ownable, AccessControl {
     }
 
     /**
-     * @notice Burns tokens from a specified address.
-     * CHANGE 6: onlyOwner → onlyRole(BURNER_ROLE)
-     * PenaltySystem will be able to burn tokens from penalized users.
-     * CHANGE 7: Added `from_` parameter to burn tokens from any address
-     * (required for penalties — PenaltySystem burns tokens from the offending user)
+     * @notice Tokens that may still be minted before the lifetime cap is reached.
+     * @dev maxSupply, mintedTokens. Unaffected by burns, by design: this is
+     * headroom for issuance, not the gap to a circulating-supply ceiling.
      */
-    function burn(address from_, uint256 amount_) public onlyRole(BURNER_ROLE) whenNotPaused {
-        if (amount_ == 0) revert AmountMustBeGreaterThanZero();
-        if (balanceOf(from_) < amount_) revert InsufficientBalance();
-        _burn(from_, amount_);
-        emit TokenBurned(from_, amount_);
+    function remainingMintable() public view returns (uint256) {
+        return maxSupply - mintedTokens;
     }
 
     /**
-     * @notice Transfers ownership to a new address.
-     * No changes here — still restricted to owner only.
-     */
-    function transferOwnershipCustom(address newOwner_) public onlyOwner {
-        require(newOwner_ != address(0), "New owner cannot be zero address");
-        require(newOwner_ != owner(), "New owner must be different from current owner");
-        emit TransferNewOwner(owner(), newOwner_);
-        transferOwnership(newOwner_);
-    }
-
-    /**
-     * @notice Pauses all token transfers.
-     * CHANGE 8: onlyOwner → onlyRole(PAUSER_ROLE)
+     * @notice Pauses all token transfers, including minting and burning.
      */
     function pause() public onlyRole(PAUSER_ROLE) {
         _pause();
@@ -101,7 +154,6 @@ contract HackToken is ERC20, Pausable, Ownable, AccessControl {
 
     /**
      * @notice Unpauses token transfers.
-     * CHANGE 8: onlyOwner → onlyRole(PAUSER_ROLE)
      */
     function unpause() public onlyRole(PAUSER_ROLE) {
         _unpause();
@@ -109,22 +161,16 @@ contract HackToken is ERC20, Pausable, Ownable, AccessControl {
 
     // --- Internal ---
 
-    function _update(address from, address to, uint256 amount) internal override {
-        require(!paused(), "Pausable: token transfer while paused");
+    /**
+     * @dev Disambiguation between ERC20 and ERC20Pausable. No logic of its own:
+     * the pause check comes from ERC20Pausable's whenNotPaused, and every
+     * transfer, mint and burn funnels through here.
+     */
+    function _update(
+        address from,
+        address to,
+        uint256 amount
+    ) internal override(ERC20, ERC20Pausable) {
         super._update(from, to, amount);
     }
-
-    /**
-     * @dev Required because both Ownable and AccessControl define supportsInterface.
-     * Without this override the compiler throws an ambiguity error.
-     */
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(AccessControl)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
-    }
 }
-

@@ -10,7 +10,7 @@ contract IncentivesPoolM01Test is Test {
     HackToken token;
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         pool.grantRole(pool.DEPOSITOR_ROLE(), address(this));
     }

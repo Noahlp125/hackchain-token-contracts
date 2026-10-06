@@ -19,7 +19,7 @@ contract ReputationBonusesHCSRC002Test is Test {
     address WINNER = makeAddr("winner");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         reputation = new ReputationBonuses(address(pool), address(registry));

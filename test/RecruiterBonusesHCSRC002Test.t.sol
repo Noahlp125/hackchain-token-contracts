@@ -19,7 +19,7 @@ contract RecruiterBonusesHCSRC002Test is Test {
     address RECRUITER = makeAddr("recruiter");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         bonuses = new RecruiterBonuses(address(pool), address(registry));

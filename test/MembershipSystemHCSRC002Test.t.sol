@@ -26,7 +26,7 @@ contract MembershipSystemHCSRC002Test is Test {
     address USER = makeAddr("user");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new MockIncentivesPool();
         registry = new RoleRegistry();
         memberships = new MembershipSystem(address(token), address(pool), TREASURY, address(registry));

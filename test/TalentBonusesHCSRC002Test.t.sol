@@ -21,7 +21,7 @@ contract TalentBonusesHCSRC002Test is Test {
     bytes32 constant PROJECT_ID = keccak256("hcsrc002-project");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         registry.grantRole(registry.REGISTRAR_ROLE(), address(this));

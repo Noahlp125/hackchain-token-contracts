@@ -23,7 +23,7 @@ contract PenaltySystemHCSRC003Test is Test {
     address ALTERNATE = makeAddr("alternate");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new MockIncentivesPool();
         registry = new RoleRegistry();
         penalties = new PenaltySystem(address(token), address(pool), makeAddr("treasury"), address(registry));

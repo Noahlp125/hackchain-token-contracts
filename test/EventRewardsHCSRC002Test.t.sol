@@ -20,7 +20,7 @@ contract EventRewardsHCSRC002Test is Test {
     address EDUCATOR = makeAddr("educator");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new IncentivesPool(address(token));
         registry = new RoleRegistry();
         events = new EventRewards(address(pool), address(registry));

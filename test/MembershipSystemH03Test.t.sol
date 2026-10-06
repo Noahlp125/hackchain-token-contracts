@@ -23,7 +23,7 @@ contract MembershipSystemH03Test is Test {
     address VIEWER = makeAddr("viewer");
 
     function setUp() public {
-        token = new HackToken();
+        token = new HackToken(address(this));
         pool = new MockIncentivesPool();
         registry = new RoleRegistry();
 
