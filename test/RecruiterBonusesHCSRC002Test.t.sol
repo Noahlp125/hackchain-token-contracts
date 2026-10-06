@@ -25,6 +25,7 @@ contract RecruiterBonusesHCSRC002Test is Test {
         bonuses = new RecruiterBonuses(address(pool), address(registry));
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(bonuses));
         registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        registry.registerRole(RECRUITER, RoleRegistry.BusinessRole.Recruiter);
 
         token.mintTokens(address(this), 500_000 ether);
         token.approve(address(pool), 500_000 ether);

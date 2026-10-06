@@ -18,6 +18,13 @@ import {
  * HC-SRC-002 fix: claimTalentAttendanceReward() y claimEducatorMonthlyReward()
  * consultan RoleRegistry.isBlocked(), un perfil bloqueado no puede
  * reclamar ninguno de los dos incentivos.
+ *
+ * HC-SRC-004 fix: los mecanismos 10, 18 y 19 exigen ahora el rol de
+ * RoleRegistry que les corresponde (Talento para la asistencia, Educador
+ * para los eventos academicos), tanto al registrar como al reclamar.
+ * rewardPromoEvent() (mecanismo 5) queda sin guard de rol a proposito: el
+ * mecanismo no asocia el organizador a ningun rol de negocio, y cualquiera
+ * que cumpla las condiciones puede organizar un evento promocional.
  */
 contract EventRewards is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -87,6 +94,8 @@ contract EventRewards is AccessControl, ReentrancyGuard {
     error MonthlyRewardAlreadyClaimed();
     error NotEnoughEventsThisMonth();
     error ProfileBlocked();
+    error NotTalent();
+    error NotEducator();
 
     // --- Events ---
     event PromoEventRewarded(
@@ -176,6 +185,7 @@ contract EventRewards is AccessControl, ReentrancyGuard {
         address talent_
     ) external onlyRole(ENFORCER_ROLE) {
         if (talent_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isTalent(talent_)) revert NotTalent();
 
         uint256 currentMonth = block.timestamp / 30 days;
         TalentMonthlyAttendance storage attendance = talentAttendance[talent_];
@@ -199,6 +209,7 @@ contract EventRewards is AccessControl, ReentrancyGuard {
      */
     function claimTalentAttendanceReward() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (!roleRegistry.isTalent(msg.sender)) revert NotTalent();
 
         uint256 currentMonth = block.timestamp / 30 days;
         TalentMonthlyAttendance storage attendance = talentAttendance[
@@ -245,6 +256,7 @@ contract EventRewards is AccessControl, ReentrancyGuard {
         address educator_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
         if (firstEventRewarded[educator_]) revert FirstEventAlreadyRewarded();
 
         // Mark before external call (CEI pattern)
@@ -272,6 +284,7 @@ contract EventRewards is AccessControl, ReentrancyGuard {
         address educator_
     ) external onlyRole(ENFORCER_ROLE) {
         if (educator_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
 
         uint256 currentMonth = block.timestamp / 30 days;
         EducatorMonthlyEvents storage monthly = educatorMonthlyEvents[
@@ -297,6 +310,7 @@ contract EventRewards is AccessControl, ReentrancyGuard {
      */
     function claimEducatorMonthlyReward() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (!roleRegistry.isEducator(msg.sender)) revert NotEducator();
 
         uint256 currentMonth = block.timestamp / 30 days;
         EducatorMonthlyEvents storage monthly = educatorMonthlyEvents[
@@ -397,4 +411,6 @@ interface IIncentivesPool {
 
 interface IRoleRegistry {
     function isBlocked(address account_) external view returns (bool);
+    function isTalent(address account_) external view returns (bool);
+    function isEducator(address account_) external view returns (bool);
 }

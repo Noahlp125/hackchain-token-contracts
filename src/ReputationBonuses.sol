@@ -16,6 +16,13 @@ import {
  *
  * HC-SRC-002 fix: claimBonus() consulta RoleRegistry.isBlocked(), un
  * perfil bloqueado no puede reclamar el incentivo.
+ *
+ * HC-SRC-004 fix: registerWinner() exige que el ganador tenga en
+ * RoleRegistry el rol de negocio por el que gana, y claimBonus() lo
+ * vuelve a comprobar al reclamar, porque el rol se puede revocar dentro
+ * de la ventana de 3 dias. La comprobacion se hace con las funciones
+ * isTalent/isEducator/isRecruiter, no convirtiendo UserRole al enum de
+ * RoleRegistry, que tiene otro orden.
  */
 
 contract ReputationBonuses is AccessControl, ReentrancyGuard {
@@ -68,6 +75,7 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
     error NotTheWinner();
     error TransferFailed();
     error ProfileBlocked();
+    error MissingBusinessRole();
 
     // --- Events ---
     event WinnerRegistered(
@@ -117,6 +125,7 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
         address winner_
     ) external onlyRole(ENFORCER_ROLE) {
         if (winner_ == address(0)) revert InvalidAddress();
+        if (!_hasRegistryRole(role_, winner_)) revert MissingBusinessRole();
 
         uint256 currentMonth = block.timestamp / 30 days;
 
@@ -162,6 +171,9 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
 
         // Check caller is the winner
         if (bonus.winner != msg.sender) revert NotTheWinner();
+
+        // The role may have been revoked since registerWinner()
+        if (!_hasRegistryRole(role_, msg.sender)) revert MissingBusinessRole();
 
         // Check not already claimed
         if (bonus.claimed) revert AlreadyClaimed();
@@ -260,6 +272,15 @@ contract ReputationBonuses is AccessControl, ReentrancyGuard {
 
     // --- Internal ---
 
+    function _hasRegistryRole(
+        UserRole role_,
+        address account_
+    ) internal view returns (bool) {
+        if (role_ == UserRole.Talent) return roleRegistry.isTalent(account_);
+        if (role_ == UserRole.Educator) return roleRegistry.isEducator(account_);
+        return roleRegistry.isRecruiter(account_);
+    }
+
     /**
      * @dev Returns a human-readable reason string for each role.
      * Used in IncentivesPool distribute() call for tracking.
@@ -301,4 +322,7 @@ interface IIncentivesPool {
 
 interface IRoleRegistry {
     function isBlocked(address account_) external view returns (bool);
+    function isTalent(address account_) external view returns (bool);
+    function isEducator(address account_) external view returns (bool);
+    function isRecruiter(address account_) external view returns (bool);
 }
