@@ -29,6 +29,14 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * un balance de evidencia (verificado off-chain en el momento de la
  * infracción) y el contrato calcula el porcentaje sobre ese valor. Mover
  * tokens después de la infracción ya no reduce ni evita la sanción.
+ *
+ * HC-SRC-011 fix: el bloqueo ya no depende del importe. Las tres
+ * penalizaciones bloqueantes bloquean aunque el porcentaje dé cero (evidencia
+ * cero o por debajo del umbral de redondeo). Ese caso se registra sin deuda y
+ * marca el perfil con manualUnblockRequired: como no hay nada que pagar,
+ * settlePenalty() no puede levantarlo y solo lo levanta el enforcer con
+ * unblockProfile(). Las penalizaciones que no bloquean siguen revirtiendo con
+ * importe cero, porque sin bloqueo una deuda cero no tiene efecto.
  */
 contract PenaltySystem is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -98,6 +106,10 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
 
     /// @notice Evita procesar dos veces el mismo caso (protección de replay).
     mapping(bytes32 => bool) public processedCase;
+
+    /// @notice user => bloqueado por un caso sin deuda (HC-SRC-011). Mientras
+    /// sea true, liquidar deuda no desbloquea el perfil, solo unblockProfile().
+    mapping(address => bool) public manualUnblockRequired;
 
     // --- Custom Errors ---
     error InvalidAddress();
@@ -258,8 +270,8 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (educator_ == address(0)) revert InvalidAddress();
 
+        // Sin guard de importe cero: penalización bloqueante (HC-SRC-011).
         uint256 penalty = (evidenceBalance_ * EDUCATOR_INACTIVITY_PENALTY_PERCENT) / 100;
-        if (penalty == 0) revert AmountMustBeGreaterThanZero();
 
         _recordPenalty(
             caseId_,
@@ -289,8 +301,8 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
         if (offender_ == address(0)) revert InvalidAddress();
         if (affected_ == address(0)) revert InvalidAddress();
 
+        // Sin guard de importe cero: penalización bloqueante (HC-SRC-011).
         uint256 penalty = (evidenceBalance_ * PLAGIARISM_PENALTY_PERCENT) / 100;
-        if (penalty == 0) revert AmountMustBeGreaterThanZero();
 
         address destination = isExternal_ ? treasury : affected_;
 
@@ -317,9 +329,9 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (recruiter_ == address(0)) revert InvalidAddress();
 
+        // Sin guard de importe cero: penalización bloqueante (HC-SRC-011).
         uint256 penalty = (evidenceBalance_ * RECRUITER_INACTIVITY_PENALTY_PERCENT) /
             100;
-        if (penalty == 0) revert AmountMustBeGreaterThanZero();
 
         _recordPenalty(
             caseId_,
@@ -365,7 +377,9 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
         }
 
         if (
-            penaltyDebt[msg.sender] == 0 && roleRegistry.isBlocked(msg.sender)
+            penaltyDebt[msg.sender] == 0 &&
+            !manualUnblockRequired[msg.sender] &&
+            roleRegistry.isBlocked(msg.sender)
         ) {
             roleRegistry.setUnblocked(msg.sender);
             emit ProfileUnblocked(msg.sender);
@@ -379,9 +393,12 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
     /**
      * @notice Override manual del enforcer para casos excepcionales
      * (p.ej. condonación de deuda decidida off-chain).
+     * @dev También es la única vía para levantar un bloqueo sin deuda
+     * (HC-SRC-011), así que borra manualUnblockRequired.
      */
     function unblockProfile(address user_) external onlyRole(ENFORCER_ROLE) {
         if (!roleRegistry.isBlocked(user_)) revert ProfileNotBlocked();
+        manualUnblockRequired[user_] = false;
         roleRegistry.setUnblocked(user_);
         emit ProfileUnblocked(user_);
     }
@@ -431,14 +448,21 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
             roleRegistry.setBlocked(user_);
         }
 
-        penaltyDebt[user_] += amount_;
-        pendingPenalties[caseId_] = PendingPenalty({
-            user: user_,
-            amount: amount_,
-            destination: destination_,
-            isPoolDeposit: isPoolDeposit_,
-            settled: false
-        });
+        // Importe cero solo llega aquí desde una penalización bloqueante
+        // (HC-SRC-011). No hay deuda que liquidar, así que no se crea caso
+        // pendiente y el bloqueo pasa a depender del enforcer.
+        if (amount_ == 0) {
+            manualUnblockRequired[user_] = true;
+        } else {
+            penaltyDebt[user_] += amount_;
+            pendingPenalties[caseId_] = PendingPenalty({
+                user: user_,
+                amount: amount_,
+                destination: destination_,
+                isPoolDeposit: isPoolDeposit_,
+                settled: false
+            });
+        }
 
         penaltyHistory[user_].push(
             PenaltyRecord({

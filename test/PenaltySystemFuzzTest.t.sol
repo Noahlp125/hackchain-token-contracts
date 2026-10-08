@@ -17,8 +17,8 @@ contract MockIncentivesPool {
 ///
 /// Propiedades comprobadas:
 ///   1. La deuda registrada es siempre el porcentaje exacto de la evidencia.
-///   2. Una penalizacion bloqueante deja el perfil bloqueado, o revierte.
-///      El test documenta el caso en el que no se cumple (HC-SRC-011).
+///   2. Una penalizacion bloqueante deja siempre el perfil bloqueado, sea cual
+///      sea la evidencia, incluida la que redondea a cero (HC-SRC-011).
 contract PenaltySystemFuzzTest is Test {
     PenaltySystem penalties;
     HackToken token;
@@ -70,30 +70,49 @@ contract PenaltySystemFuzzTest is Test {
         );
     }
 
-    /// @dev HC-SRC-011. Una penalizacion bloqueante deberia dejar el perfil
-    /// bloqueado para cualquier evidencia. Por debajo del umbral de redondeo la
-    /// llamada revierte y el perfil queda sin bloquear, que es el hallazgo.
-    ///
-    /// Este test documenta el comportamiento actual: pasa porque afirma lo que
-    /// el contrato hace hoy, no lo que deberia hacer. Se invierte cuando se
-    /// remedie HC-SRC-011.
-    function testFuzz_HCSRC011_LowEvidenceLeavesProfileUnblocked(uint256 evidence_) public {
+    /// @dev HC-SRC-011. Por debajo del umbral de redondeo (20 wei al 5%, 10 wei
+    /// al 10%) las tres penalizaciones bloqueantes bloquean igual. Si el
+    /// porcentaje da cero no hay deuda y el perfil exige desbloqueo manual.
+    function testFuzz_HCSRC011_BlockingPenaltiesBlockBelowRoundingThreshold(
+        uint256 evidence_,
+        uint8 which_
+    ) public {
         evidence_ = bound(evidence_, 0, 19);
+        uint256 percent = _applyBlockingPenalty(which_ % 3, evidence_);
+        uint256 expectedDebt = (evidence_ * percent) / 100;
 
-        vm.expectRevert(PenaltySystem.AmountMustBeGreaterThanZero.selector);
-        penalties.applyEducatorInactivityPenalty(keccak256("case"), USER, evidence_);
-
-        assertFalse(registry.isBlocked(USER), "el perfil queda sin bloquear por debajo del umbral");
+        assertTrue(registry.isBlocked(USER), "el perfil debe quedar bloqueado con cualquier evidencia");
+        assertEq(penalties.penaltyDebt(USER), expectedDebt, "la deuda es el porcentaje, aunque sea cero");
+        assertEq(
+            penalties.manualUnblockRequired(USER),
+            expectedDebt == 0,
+            "solo un caso sin deuda exige desbloqueo manual"
+        );
     }
 
-    /// @dev Por encima del umbral el bloqueo si ocurre, lo que delimita el
-    /// alcance exacto de HC-SRC-011.
-    function testFuzz_BlockingPenaltyBlocksAboveTheRoundingThreshold(uint256 evidence_) public {
+    function _applyBlockingPenalty(uint256 which_, uint256 evidence_) internal returns (uint256 percent) {
+        bytes32 caseId = keccak256("case");
+        if (which_ == 0) {
+            penalties.applyEducatorInactivityPenalty(caseId, USER, evidence_);
+            return penalties.EDUCATOR_INACTIVITY_PENALTY_PERCENT();
+        }
+        if (which_ == 1) {
+            penalties.applyPlagiarismPenalty(caseId, USER, makeAddr("affected"), true, evidence_);
+            return penalties.PLAGIARISM_PENALTY_PERCENT();
+        }
+        penalties.applyRecruiterInactivityPenalty(caseId, USER, evidence_);
+        return penalties.RECRUITER_INACTIVITY_PENALTY_PERCENT();
+    }
+
+    /// @dev Por encima del umbral el bloqueo va con deuda y se levanta pagando,
+    /// sin desbloqueo manual. Con el test anterior cubre el rango entero.
+    function testFuzz_BlockingPenaltiesBlockAboveTheRoundingThreshold(uint256 evidence_, uint8 which_) public {
         evidence_ = bound(evidence_, 20, MAX_SUPPLY);
 
-        penalties.applyEducatorInactivityPenalty(keccak256("case"), USER, evidence_);
+        _applyBlockingPenalty(which_ % 3, evidence_);
 
         assertTrue(registry.isBlocked(USER), "por encima del umbral el perfil debe quedar bloqueado");
+        assertFalse(penalties.manualUnblockRequired(USER), "con deuda no hace falta desbloqueo manual");
     }
 
     /// @dev La penalizacion por venta masiva calcula sobre el importe vendido,
