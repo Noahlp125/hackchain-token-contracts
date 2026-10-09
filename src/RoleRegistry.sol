@@ -25,6 +25,13 @@ import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol"
  * no una reutilización de registerRole/revokeRole), pero comparte el mismo
  * REGISTRAR_ROLE porque ambos representan hechos verificados off-chain que
  * se escriben on-chain por una cuenta de confianza.
+ *
+ * HC-SRC-012 fix: el bloqueo se guarda por origen. Cada cuenta con
+ * REGISTRAR_ROLE pone y quita solo su propio bloqueo, y isBlocked() es true
+ * mientras quede alguno. Antes había un único bool, y cualquier escritor
+ * levantaba el bloqueo de otro (PenaltySystem lo hacía al liquidar deuda).
+ * adminUnblock() permite al admin quitar el bloqueo de un origen que ya no
+ * puede quitarlo él mismo (llave perdida o rotada).
  */
 contract RoleRegistry is AccessControl {
     // --- Roles de gestión ---
@@ -49,11 +56,14 @@ contract RoleRegistry is AccessControl {
     /// @notice user => role => timestamp de registro (0 si nunca se registró).
     mapping(address => mapping(BusinessRole => uint256)) public registeredAt;
 
-    /// @notice user => perfil bloqueado actualmente (HC-SRC-002). Fuente
-    /// única para todo el protocolo — PenaltySystem escribe aquí en vez de
-    /// mantener su propio estado, y el resto de módulos deben consultar
-    /// isBlocked() antes de aceptar actividad nueva o pagar incentivos.
-    mapping(address => bool) public blockedProfiles;
+    /// @notice user => origen => ese origen mantiene un bloqueo sobre el
+    /// perfil (HC-SRC-002, por origen desde HC-SRC-012). Fuente única para
+    /// todo el protocolo: el resto de módulos consulta isBlocked() antes de
+    /// aceptar actividad nueva o pagar incentivos.
+    mapping(address => mapping(address => bool)) private _blockedBy;
+
+    /// @notice user => número de orígenes que lo mantienen bloqueado.
+    mapping(address => uint256) public blockCount;
 
     // --- Custom Errors ---
 
@@ -67,8 +77,9 @@ contract RoleRegistry is AccessControl {
 
     event RoleRegistered(address indexed account, BusinessRole indexed role, uint256 timestamp);
     event RoleRevoked(address indexed account, BusinessRole indexed role);
-    event ProfileBlocked(address indexed account);
-    event ProfileUnblocked(address indexed account);
+    event ProfileBlocked(address indexed account, address indexed source);
+    event ProfileUnblocked(address indexed account, address indexed source);
+    event BlockLiftedByAdmin(address indexed account, address indexed source, address indexed admin);
 
     // --- Constructor ---
 
@@ -120,42 +131,74 @@ contract RoleRegistry is AccessControl {
     // --- Bloqueo de perfil (HC-SRC-002) ---
 
     /**
-     * @notice Bloquea un perfil (p.ej. tras una penalización aplicada por
-     * PenaltySystem).
-     * @dev Solo invocable por REGISTRAR_ROLE. Revierte si ya estaba
-     * bloqueado, para que la llamada nunca oculte un estado inesperado.
+     * @notice Pone el bloqueo de quien llama sobre un perfil (p.ej. tras una
+     * penalización aplicada por PenaltySystem, o por decisión de un operador).
+     * @dev Solo invocable por REGISTRAR_ROLE. Revierte si quien llama ya
+     * tenía su bloqueo puesto, para que la llamada nunca oculte un estado
+     * inesperado. El bloqueo de otro origen no impide poner el propio.
      * @param account_ Dirección a bloquear.
      */
     function setBlocked(address account_) external onlyRole(REGISTRAR_ROLE) {
         if (account_ == address(0)) revert InvalidAddress();
-        if (blockedProfiles[account_]) revert AlreadyBlocked();
+        if (_blockedBy[account_][msg.sender]) revert AlreadyBlocked();
 
-        blockedProfiles[account_] = true;
+        _blockedBy[account_][msg.sender] = true;
+        blockCount[account_] += 1;
 
-        emit ProfileBlocked(account_);
+        emit ProfileBlocked(account_, msg.sender);
     }
 
     /**
-     * @notice Desbloquea un perfil previamente bloqueado.
-     * @dev Solo invocable por REGISTRAR_ROLE. Revierte si no estaba
-     * bloqueado.
+     * @notice Quita el bloqueo de quien llama sobre un perfil.
+     * @dev Solo invocable por REGISTRAR_ROLE. Revierte si quien llama no
+     * tenía bloqueo puesto: nadie puede quitar el bloqueo de otro origen. El
+     * perfil sigue bloqueado mientras otro origen mantenga el suyo.
      * @param account_ Dirección a desbloquear.
      */
     function setUnblocked(address account_) external onlyRole(REGISTRAR_ROLE) {
-        if (!blockedProfiles[account_]) revert NotBlocked();
+        if (!_blockedBy[account_][msg.sender]) revert NotBlocked();
 
-        blockedProfiles[account_] = false;
+        _unblock(account_, msg.sender);
+    }
 
-        emit ProfileUnblocked(account_);
+    /**
+     * @notice Quita el bloqueo de un origen concreto.
+     * @dev Salida de emergencia para un origen que ya no puede quitarlo él
+     * mismo, por ejemplo si perdió o rotó su llave. Sin ella, ese bloqueo
+     * sería permanente.
+     * @param account_ Dirección bloqueada.
+     * @param source_ Origen cuyo bloqueo se quita.
+     */
+    function adminUnblock(address account_, address source_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (!_blockedBy[account_][source_]) revert NotBlocked();
+
+        _unblock(account_, source_);
+
+        emit BlockLiftedByAdmin(account_, source_, msg.sender);
     }
 
     /**
      * @notice Comprueba si un perfil está bloqueado actualmente.
      * @dev Fuente única que debe consultar cualquier módulo antes de
-     * aceptar actividad nueva o pagar un incentivo.
+     * aceptar actividad nueva o pagar un incentivo. True mientras al menos
+     * un origen mantenga su bloqueo.
      */
     function isBlocked(address account_) external view returns (bool) {
-        return blockedProfiles[account_];
+        return blockCount[account_] > 0;
+    }
+
+    /**
+     * @notice Comprueba si un origen concreto mantiene un bloqueo sobre el perfil.
+     */
+    function isBlockedBy(address account_, address source_) external view returns (bool) {
+        return _blockedBy[account_][source_];
+    }
+
+    function _unblock(address account_, address source_) internal {
+        _blockedBy[account_][source_] = false;
+        blockCount[account_] -= 1;
+
+        emit ProfileUnblocked(account_, source_);
     }
 
     // --- Views ---

@@ -37,6 +37,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * settlePenalty() no puede levantarlo y solo lo levanta el enforcer con
  * unblockProfile(). Las penalizaciones que no bloquean siguen revirtiendo con
  * importe cero, porque sin bloqueo una deuda cero no tiene efecto.
+ *
+ * HC-SRC-012 fix: RoleRegistry guarda el bloqueo por origen. Este contrato
+ * pone y quita solo el suyo, así que liquidar deuda ya no levanta un bloqueo
+ * puesto por otro escritor (p.ej. un operador que bloquea a mano un fraude de
+ * identidad). Por la misma razón añade su bloqueo aunque el perfil ya esté
+ * bloqueado por otro: si no, al quitar ese otro la deuda quedaría sin bloqueo.
  */
 contract PenaltySystem is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -379,7 +385,7 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
         if (
             penaltyDebt[msg.sender] == 0 &&
             !manualUnblockRequired[msg.sender] &&
-            roleRegistry.isBlocked(msg.sender)
+            roleRegistry.isBlockedBy(msg.sender, address(this))
         ) {
             roleRegistry.setUnblocked(msg.sender);
             emit ProfileUnblocked(msg.sender);
@@ -394,10 +400,11 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
      * @notice Override manual del enforcer para casos excepcionales
      * (p.ej. condonación de deuda decidida off-chain).
      * @dev También es la única vía para levantar un bloqueo sin deuda
-     * (HC-SRC-011), así que borra manualUnblockRequired.
+     * (HC-SRC-011), así que borra manualUnblockRequired. Solo levanta el
+     * bloqueo de este contrato (HC-SRC-012), los de otros orígenes siguen.
      */
     function unblockProfile(address user_) external onlyRole(ENFORCER_ROLE) {
-        if (!roleRegistry.isBlocked(user_)) revert ProfileNotBlocked();
+        if (!roleRegistry.isBlockedBy(user_, address(this))) revert ProfileNotBlocked();
         manualUnblockRequired[user_] = false;
         roleRegistry.setUnblocked(user_);
         emit ProfileUnblocked(user_);
@@ -440,11 +447,14 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
         if (processedCase[caseId_]) revert CaseAlreadyProcessed();
         processedCase[caseId_] = true;
 
-        // RoleRegistry.setBlocked() revierte si ya estaba bloqueado (protege
-        // contra un doble bloqueo silencioso). Un mismo usuario puede
-        // acumular varios casos bloqueantes (ver test_H04_MultipleCases...),
-        // asi que solo llamamos si todavia no esta bloqueado.
-        if (blockProfile_ && !roleRegistry.isBlocked(user_)) {
+        // RoleRegistry.setBlocked() revierte si este contrato ya tenia su
+        // bloqueo puesto, y un usuario puede acumular varios casos
+        // bloqueantes (ver test_H04_MultipleCases...), asi que solo lo
+        // ponemos si falta. Se mira el bloqueo propio y no isBlocked(): el
+        // de otro origen no cuenta (HC-SRC-012). Un bloqueo propio nuevo
+        // descarta la marca de un bloqueo anterior que ya no existe.
+        if (blockProfile_ && !roleRegistry.isBlockedBy(user_, address(this))) {
+            manualUnblockRequired[user_] = false;
             roleRegistry.setBlocked(user_);
         }
 
@@ -511,6 +521,7 @@ interface IIncentivesPool {
 
 interface IRoleRegistry {
     function isBlocked(address account_) external view returns (bool);
+    function isBlockedBy(address account_, address source_) external view returns (bool);
     function setBlocked(address account_) external;
     function setUnblocked(address account_) external;
 }
