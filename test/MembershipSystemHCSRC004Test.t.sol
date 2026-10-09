@@ -54,11 +54,12 @@ contract MembershipSystemHCSRC004Test is Test {
         memberships.registerContentView(EDUCATOR);
         vm.stopPrank();
 
+        memberships.advanceCycle();
         registry.revokeRole(EDUCATOR, RoleRegistry.BusinessRole.Educator);
 
         vm.prank(EDUCATOR);
         vm.expectRevert(MembershipSystem.NotEducator.selector);
-        memberships.claimEducatorRewards();
+        memberships.claimEducatorRewards(0);
     }
 
     /// @dev Caso positivo: un educador registrado en RoleRegistry sigue
@@ -71,11 +72,12 @@ contract MembershipSystemHCSRC004Test is Test {
         memberships.registerContentView(EDUCATOR);
         vm.stopPrank();
 
-        vm.prank(EDUCATOR);
-        memberships.claimEducatorRewards();
+        memberships.advanceCycle();
 
-        (uint256 views, uint256 pendingRewards) = memberships.educatorViews(EDUCATOR);
-        assertEq(views, 0, "views should reset after claim");
-        assertGt(pendingRewards, 0, "educator should have received a reward");
+        vm.prank(EDUCATOR);
+        memberships.claimEducatorRewards(0);
+
+        assertTrue(memberships.rewardsClaimed(0, EDUCATOR), "the cycle is marked as claimed");
+        assertGt(token.balanceOf(EDUCATOR), 0, "educator should have received a reward");
     }
 }

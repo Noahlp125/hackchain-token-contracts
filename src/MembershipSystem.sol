@@ -28,6 +28,15 @@ import {
  * RoleRegistry.isEducator() en su lugar, para que revocar a un educador
  * en RoleRegistry tenga efecto inmediato aqui tambien, sin un rol
  * paralelo que se pueda olvidar sincronizar.
+ *
+ * HC-SRC-001 fix: la recompensa académica se contabiliza por ciclo. Cada
+ * ciclo guarda su pool (las cuotas pagadas mientras está abierto), su total
+ * de vistas y las vistas de cada educador. advanceCycle() cierra el ciclo y
+ * congela esos datos. Solo se reclama contra ciclos cerrados, una vez por
+ * educador, así que el reparto no depende del orden de los claims ni de las
+ * cuotas que entren después. Un ciclo cerrado sin vistas pasa su pool al
+ * siguiente. Lo que nadie reclame en UNCLAIMED_ROLLOVER_WINDOW tras el cierre
+ * se puede pasar al ciclo abierto.
  */
 contract MembershipSystem is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -54,6 +63,10 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     // Split percentages — 50% to pool, 50% to treasury
     uint256 public constant POOL_SHARE = 50;
     uint256 public constant TREASURY_SHARE = 50;
+
+    // Plazo tras el cierre de un ciclo para reclamar su parte, después del
+    // cual lo no reclamado puede pasar al ciclo abierto (HC-SRC-001)
+    uint256 public constant UNCLAIMED_ROLLOVER_WINDOW = 90 days;
 
     // --- Enums ---
     enum AcademicTier {
@@ -84,12 +97,15 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     }
 
     /**
-     * @dev Tracks content views per educator for reward distribution.
-     * Reset after each distribution cycle.
+     * @dev Contabilidad de un ciclo de recompensas académicas (HC-SRC-001).
+     * pool y totalViews se congelan al cerrar el ciclo.
      */
-    struct EducatorViews {
-        uint256 views;
-        uint256 pendingRewards;
+    struct Cycle {
+        uint256 pool;
+        uint256 totalViews;
+        uint256 claimed;
+        uint256 closedAt;
+        bool rolledOver;
     }
 
     // --- State ---
@@ -104,18 +120,18 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     // user => academic membership info
     mapping(address => AcademicMembership) public academicMemberships;
 
-    // educator => their view/reward tracking
-    mapping(address => EducatorViews) public educatorViews;
-
-    // total views across all educators in current cycle (for proportional distribution)
-    uint256 public totalViewsThisCycle;
-
-    // total academic fees pending distribution to educators
-    uint256 public pendingEducatorPool;
-
-    // ciclo de distribución actual — se incrementa manualmente por el admin
-    // al cerrar un periodo, permitiendo que las vistas vuelvan a contarse
+    // ciclo de distribución abierto. El admin lo cierra con advanceCycle(),
+    // que abre el siguiente
     uint256 public currentCycle;
+
+    // cycle => contabilidad del ciclo
+    mapping(uint256 => Cycle) public cycles;
+
+    // cycle => educator => vistas del educador en ese ciclo
+    mapping(uint256 => mapping(address => uint256)) public educatorCycleViews;
+
+    // cycle => educator => ya reclamó su parte de ese ciclo
+    mapping(uint256 => mapping(address => bool)) public rewardsClaimed;
 
     // cycle => viewer => educator => ya contado en este ciclo
     mapping(uint256 => mapping(address => mapping(address => bool)))
@@ -134,6 +150,10 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     error ViewAlreadyCounted();
     error ProfileBlocked();
     error NotEducator();
+    error CycleNotClosed();
+    error RewardsAlreadyClaimed();
+    error CycleRolledOver();
+    error RolloverWindowStillOpen();
 
     // --- Events ---
 
@@ -149,7 +169,17 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         uint256 expiresAt
     );
     event ContentViewed(address indexed user, address indexed educator);
-    event EducatorRewardsDistributed(address indexed educator, uint256 amount);
+    event EducatorRewardsDistributed(
+        address indexed educator,
+        uint256 indexed cycleId,
+        uint256 amount
+    );
+    event CycleClosed(uint256 indexed cycleId, uint256 pool, uint256 totalViews);
+    event UnclaimedRolledOver(
+        uint256 indexed fromCycle,
+        uint256 indexed toCycle,
+        uint256 amount
+    );
 
     // --- Constructor ---
     /**
@@ -329,8 +359,8 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
 
         hackToken.safeTransfer(treasury, treasuryAmount);
 
-        // Accumulate educator pool for proportional distribution
-        pendingEducatorPool += educatorAmount;
+        // La parte para educadores cuenta en el ciclo abierto
+        cycles[currentCycle].pool += educatorAmount;
 
         // Register membership
         uint256 expiresAt = block.timestamp + duration;
@@ -363,38 +393,60 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
             revert ViewAlreadyCounted();
 
         hasCountedView[currentCycle][msg.sender][educator_] = true;
-        educatorViews[educator_].views += 1;
-        totalViewsThisCycle += 1;
+        educatorCycleViews[currentCycle][educator_] += 1;
+        cycles[currentCycle].totalViews += 1;
 
         emit ContentViewed(msg.sender, educator_);
     }
 
     /**
-     * @notice Claim proportional rewards based on content views.
-     * @dev Called by educators to claim their share of the educator pool.
-     * Share is proportional to their views vs total views this cycle.
+     * @notice Claim the educator's share of a closed cycle.
+     * @dev Share = pool del ciclo × vistas propias / vistas totales del ciclo,
+     * sobre datos congelados al cierre (HC-SRC-001). Una vez por educador y
+     * ciclo.
+     * @param cycleId_ Ciclo cerrado cuya parte se reclama.
      */
-    function claimEducatorRewards() external nonReentrant {
+    function claimEducatorRewards(uint256 cycleId_) external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (!roleRegistry.isEducator(msg.sender)) revert NotEducator();
-        if (totalViewsThisCycle == 0) revert NoPendingRewards();
+        if (cycleId_ >= currentCycle) revert CycleNotClosed();
+        if (rewardsClaimed[cycleId_][msg.sender]) revert RewardsAlreadyClaimed();
 
-        EducatorViews storage ev = educatorViews[msg.sender];
-        if (ev.views == 0) revert NoPendingRewards();
+        Cycle storage cycle = cycles[cycleId_];
+        if (cycle.rolledOver) revert CycleRolledOver();
 
-        // Calculate proportional reward
-        uint256 reward = (pendingEducatorPool * ev.views) / totalViewsThisCycle;
+        uint256 views = educatorCycleViews[cycleId_][msg.sender];
+        if (views == 0) revert NoPendingRewards();
+
+        uint256 reward = (cycle.pool * views) / cycle.totalViews;
         if (reward == 0) revert NoPendingRewards();
 
-        // Reset views before transfer (CEI pattern)
-        totalViewsThisCycle -= ev.views;
-        ev.pendingRewards += reward;
-        ev.views = 0;
-        pendingEducatorPool -= reward;
+        rewardsClaimed[cycleId_][msg.sender] = true;
+        cycle.claimed += reward;
 
         hackToken.safeTransfer(msg.sender, reward);
 
-        emit EducatorRewardsDistributed(msg.sender, reward);
+        emit EducatorRewardsDistributed(msg.sender, cycleId_, reward);
+    }
+
+    /**
+     * @notice Pasa al ciclo abierto lo que no se reclamó de un ciclo cerrado.
+     * @dev Callable por cualquiera una vez pasado UNCLAIMED_ROLLOVER_WINDOW
+     * desde el cierre. Cubre las partes de educadores revocados, bloqueados o
+     * que no reclaman, y los restos de redondeo. Después ese ciclo ya no se
+     * puede reclamar.
+     * @param cycleId_ Ciclo cerrado cuyo resto se traslada.
+     */
+    function rollOverUnclaimed(uint256 cycleId_) external {
+        if (cycleId_ >= currentCycle) revert CycleNotClosed();
+
+        Cycle storage cycle = cycles[cycleId_];
+        if (cycle.rolledOver) revert CycleRolledOver();
+        if (block.timestamp < cycle.closedAt + UNCLAIMED_ROLLOVER_WINDOW) {
+            revert RolloverWindowStillOpen();
+        }
+
+        _rollOver(cycleId_, cycle.pool - cycle.claimed);
     }
 
     // --- Views ---
@@ -441,12 +493,20 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     }
     /**
      * @dev Fuente de verdad única para saber si una membresía avanzada está
-     * realmente activa (activa Y no expirada). Evita el desajuste entre
+     * realmente activa (activa y no expirada). Evita el desajuste entre
      * el booleano `active` y `expiresAt` señalado en L-03.
      */
     function _isAdvancedActive(address user_) internal view returns (bool) {
         AdvancedMembership storage m = advancedMemberships[user_];
         return m.active && m.expiresAt > block.timestamp;
+    }
+
+    /// @dev Marca el ciclo como trasladado y suma el importe al ciclo abierto.
+    function _rollOver(uint256 cycleId_, uint256 amount_) internal {
+        cycles[cycleId_].rolledOver = true;
+        cycles[currentCycle].pool += amount_;
+
+        emit UnclaimedRolledOver(cycleId_, currentCycle, amount_);
     }
 
     // --- Admin ---
@@ -474,13 +534,23 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
         roleRegistry = IRoleRegistry(newRegistry_);
     }
     /**
-     * @notice Avanza al siguiente ciclo de distribución de vistas académicas.
-     * @dev Permite que los espectadores vuelvan a generar vistas contables
-     * para el mismo educador. Debe llamarse tras cada distribución completa
-     * del pool (p.ej. mensualmente), no arbitrariamente.
+     * @notice Cierra el ciclo abierto y abre el siguiente.
+     * @dev El pool y las vistas del ciclo cerrado quedan congelados para los
+     * claims (HC-SRC-001). Los espectadores vuelven a poder generar vistas
+     * contables en el ciclo nuevo. Si el ciclo se cierra sin vistas nadie
+     * podría reclamar su pool, así que pasa entero al siguiente.
      */
     function advanceCycle() external onlyRole(ADMIN_ROLE) {
-        currentCycle += 1;
+        uint256 closing = currentCycle;
+        Cycle storage cycle = cycles[closing];
+        cycle.closedAt = block.timestamp;
+        currentCycle = closing + 1;
+
+        emit CycleClosed(closing, cycle.pool, cycle.totalViews);
+
+        if (cycle.totalViews == 0 && cycle.pool > 0) {
+            _rollOver(closing, cycle.pool);
+        }
     }
 }
 

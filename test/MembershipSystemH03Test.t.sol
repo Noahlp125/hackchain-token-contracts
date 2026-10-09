@@ -71,8 +71,9 @@ contract MembershipSystemH03Test is Test {
         vm.prank(VIEWER);
         memberships.registerContentView(EDUCATOR); // no debe revertir
 
-        (uint256 views, ) = memberships.educatorViews(EDUCATOR);
-        assertEq(views, 2, "view count did not increase in new cycle");
+        // Desde HC-SRC-001 cada ciclo lleva sus propias vistas, no un total acumulado.
+        assertEq(memberships.educatorCycleViews(0, EDUCATOR), 1, "view in the closed cycle");
+        assertEq(memberships.educatorCycleViews(1, EDUCATOR), 1, "view counted again in the new cycle");
     }
 
     function test_H03_EducatorCannotDrainPoolWithSelfViews() public {
@@ -86,7 +87,10 @@ contract MembershipSystemH03Test is Test {
         memberships.registerContentView(EDUCATOR);
         vm.stopPrank();
 
-        (uint256 views, ) = memberships.educatorViews(EDUCATOR);
-        assertEq(views, 0, "educator should have zero self-generated views");
+        assertEq(
+            memberships.educatorCycleViews(memberships.currentCycle(), EDUCATOR),
+            0,
+            "educator should have zero self-generated views"
+        );
     }
 }
