@@ -25,6 +25,7 @@ contract ReputationBonusesHCSRC002Test is Test {
         reputation = new ReputationBonuses(address(pool), address(registry));
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(reputation));
         registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        registry.registerRole(WINNER, RoleRegistry.BusinessRole.Talent);
 
         token.mintTokens(address(this), 10_000 ether);
         token.approve(address(pool), 10_000 ether);

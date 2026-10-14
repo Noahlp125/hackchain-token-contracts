@@ -23,6 +23,16 @@ import {
  * HC-SRC-002 fix: claimRegistrationBonus(), claimMonthlyHiringBonus() y
  * claimKycBonus() consultan RoleRegistry.isBlocked(), un perfil
  * bloqueado no puede reclamar ninguno de los tres bonos.
+ *
+ * HC-SRC-007 fix: registerHiring() y claimMonthlyHiringBonus() eran las
+ * unicas funciones del contrato que no exigian isRegistered. Una cuenta
+ * no registrada podia acumular contrataciones y cobrar el bono mensual.
+ *
+ * HC-SRC-004 fix: isRegistered es un alta propia de este modulo y no se
+ * sincroniza con RoleRegistry. Ademas de isRegistered, todas las
+ * funciones que dan de alta, acumulan o pagan exigen ahora
+ * RoleRegistry.isRecruiter(), de modo que revocar el rol en RoleRegistry
+ * corta tambien la actividad aqui.
  */
 contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -87,6 +97,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     error ActivityAlreadyProcessed();
     error TalentAlreadyCountedThisMonth();
     error ProfileBlocked();
+    error NotRecruiter();
 
     // --- Events ---
     event RecruiterRegistered(address indexed recruiter, uint256 registeredAt);
@@ -128,6 +139,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
         address recruiter_
     ) external onlyRole(ENFORCER_ROLE) {
         if (recruiter_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isRecruiter(recruiter_)) revert NotRecruiter();
         if (isRegistered[recruiter_]) revert AlreadyRegistered();
 
         isRegistered[recruiter_] = true;
@@ -152,6 +164,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
         bytes32 activityId_
     ) external onlyRole(ENFORCER_ROLE) {
         if (!isRegistered[recruiter_]) revert NotRegistered();
+        if (!roleRegistry.isRecruiter(recruiter_)) revert NotRecruiter();
         if (processedActivity[activityId_]) revert ActivityAlreadyProcessed();
 
         processedActivity[activityId_] = true;
@@ -176,6 +189,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     function claimRegistrationBonus() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (!isRegistered[msg.sender]) revert NotRegistered();
+        if (!roleRegistry.isRecruiter(msg.sender)) revert NotRecruiter();
 
         RegistrationInfo storage info = registrationInfo[msg.sender];
 
@@ -210,6 +224,8 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
         bytes32 talentId_
     ) external onlyRole(ENFORCER_ROLE) {
         if (recruiter_ == address(0)) revert InvalidAddress();
+        if (!isRegistered[recruiter_]) revert NotRegistered();
+        if (!roleRegistry.isRecruiter(recruiter_)) revert NotRecruiter();
 
         uint256 currentMonth = block.timestamp / 30 days;
         MonthlyHiring storage hiring = monthlyHiring[recruiter_];
@@ -232,6 +248,8 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
 
     function claimMonthlyHiringBonus() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
+        if (!isRegistered[msg.sender]) revert NotRegistered();
+        if (!roleRegistry.isRecruiter(msg.sender)) revert NotRecruiter();
 
         uint256 currentMonth = block.timestamp / 30 days;
         MonthlyHiring storage hiring = monthlyHiring[msg.sender];
@@ -271,6 +289,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     function verifyKyc(address recruiter_) external onlyRole(ENFORCER_ROLE) {
         if (recruiter_ == address(0)) revert InvalidAddress();
         if (!isRegistered[recruiter_]) revert NotRegistered();
+        if (!roleRegistry.isRecruiter(recruiter_)) revert NotRecruiter();
         if (kycRewarded[recruiter_]) revert KycAlreadyRewarded();
 
         isKycVerified[recruiter_] = true;
@@ -281,6 +300,7 @@ contract RecruiterBonuses is AccessControl, ReentrancyGuard {
     function claimKycBonus() external nonReentrant {
         if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
         if (!isRegistered[msg.sender]) revert NotRegistered();
+        if (!roleRegistry.isRecruiter(msg.sender)) revert NotRecruiter();
         if (!isKycVerified[msg.sender]) revert NotKycVerified();
         if (kycRewarded[msg.sender]) revert KycAlreadyRewarded();
 
@@ -354,4 +374,5 @@ interface IIncentivesPool {
 
 interface IRoleRegistry {
     function isBlocked(address account_) external view returns (bool);
+    function isRecruiter(address account_) external view returns (bool);
 }

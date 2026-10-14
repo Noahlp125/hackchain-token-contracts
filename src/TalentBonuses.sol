@@ -26,6 +26,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * y distributeToTalents() quedan fuera de este guard: el primero es
  * recuperar fondos propios, el segundo es un pago del enforcer que se
  * revisara aparte.
+ *
+ * HC-SRC-004 fix: rewardSchoolingDegree() y rewardTalentHired() exigen
+ * RoleRegistry.isTalent() sobre el destinatario, igual que fundProject()
+ * ya exigia Educador o Recruiter al sponsor.
  */
 contract TalentBonuses is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -89,6 +93,7 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
     error TalentCannotBeSponsor();
     error BatchTooLarge();
     error ProfileBlocked();
+    error NotTalent();
 
     // --- Events ---
     event SchoolingDegreeRewarded(
@@ -143,6 +148,7 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
         bytes32 degreeId_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (user_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isTalent(user_)) revert NotTalent();
         if (degreeRewarded[user_][degreeId_]) revert DegreeAlreadyRewarded();
 
         degreeRewarded[user_][degreeId_] = true;
@@ -162,6 +168,7 @@ contract TalentBonuses is AccessControl, ReentrancyGuard {
         address talent_
     ) external onlyRole(ENFORCER_ROLE) nonReentrant {
         if (talent_ == address(0)) revert InvalidAddress();
+        if (!roleRegistry.isTalent(talent_)) revert NotTalent();
 
         uint256 currentMonth = block.timestamp / 30 days;
         if (lastHiringRewardMonth[talent_] == currentMonth)
@@ -357,5 +364,6 @@ interface IIncentivesPool {
 interface IRoleRegistry {
     function isEducator(address account_) external view returns (bool);
     function isRecruiter(address account_) external view returns (bool);
+    function isTalent(address account_) external view returns (bool);
     function isBlocked(address account_) external view returns (bool);
 }

@@ -26,6 +26,8 @@ contract EventRewardsHCSRC002Test is Test {
         events = new EventRewards(address(pool), address(registry));
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(events));
         registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        registry.registerRole(TALENT, RoleRegistry.BusinessRole.Talent);
+        registry.registerRole(EDUCATOR, RoleRegistry.BusinessRole.Educator);
 
         token.mintTokens(address(this), 20_000 ether);
         token.approve(address(pool), 20_000 ether);

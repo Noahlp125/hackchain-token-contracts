@@ -28,7 +28,8 @@ contract MembershipSystemH03Test is Test {
         registry = new RoleRegistry();
 
         memberships = new MembershipSystem(address(token), address(pool), TREASURY, address(registry));
-        memberships.grantRole(memberships.EDUCATOR_ROLE(), EDUCATOR);
+        registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        registry.registerRole(EDUCATOR, RoleRegistry.BusinessRole.Educator);
 
         token.mintTokens(VIEWER, 100_000 ether);
         token.mintTokens(EDUCATOR, 100_000 ether);

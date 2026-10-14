@@ -30,8 +30,8 @@ contract MembershipSystemHCSRC002Test is Test {
         pool = new MockIncentivesPool();
         registry = new RoleRegistry();
         memberships = new MembershipSystem(address(token), address(pool), TREASURY, address(registry));
-        memberships.grantRole(memberships.EDUCATOR_ROLE(), EDUCATOR);
         registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        registry.registerRole(EDUCATOR, RoleRegistry.BusinessRole.Educator);
 
         token.mintTokens(USER, 400_000 ether);
         vm.prank(USER);

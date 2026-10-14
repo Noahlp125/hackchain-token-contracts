@@ -25,6 +25,7 @@ contract EducatorBonusesHCSRC002Test is Test {
         bonuses = new EducatorBonuses(address(pool), address(registry));
         pool.grantRole(pool.DISTRIBUTOR_ROLE(), address(bonuses));
         registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        registry.registerRole(EDUCATOR, RoleRegistry.BusinessRole.Educator);
 
         token.mintTokens(address(this), 20_000 ether);
         token.approve(address(pool), 20_000 ether);
