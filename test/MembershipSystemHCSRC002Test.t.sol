@@ -86,11 +86,12 @@ contract MembershipSystemHCSRC002Test is Test {
         memberships.registerContentView(EDUCATOR);
         vm.stopPrank();
 
+        memberships.advanceCycle();
         registry.setBlocked(EDUCATOR);
 
         vm.prank(EDUCATOR);
         vm.expectRevert(MembershipSystem.ProfileBlocked.selector);
-        memberships.claimEducatorRewards();
+        memberships.claimEducatorRewards(0);
     }
 
     /// @dev Exencion explicita: cancelar la membresia avanzada es salida +
