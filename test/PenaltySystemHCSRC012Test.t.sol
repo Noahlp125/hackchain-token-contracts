@@ -100,14 +100,29 @@ contract PenaltySystemHCSRC012Test is Test {
         penalties.unblockProfile(USER);
     }
 
+    /// @dev Con PenaltySystem activo, el admin no puede quitar su bloqueo,
+    /// aunque haya deuda pendiente.
+    function test_HCSRC012_AdminCannotLiftPenaltySystemsBlockWithDebtPending() public {
+        penalties.applyEducatorInactivityPenalty(BLOCKING_CASE, USER, 1_000 ether);
+
+        vm.expectRevert(RoleRegistry.SourceStillActive.selector);
+        registry.adminUnblock(USER, address(penalties));
+
+        assertTrue(registry.isBlocked(USER), "the debt keeps the profile blocked");
+    }
+
     /// @dev Riesgo residual de HC-SRC-011: si el bloqueo de PenaltySystem
-    /// desaparece por otra via, la marca de desbloqueo manual no debe quedar
-    /// colgando sobre el siguiente caso.
+    /// desaparece por la via de emergencia (revocarle el rol y adminUnblock),
+    /// la marca de desbloqueo manual no debe quedar colgando sobre el
+    /// siguiente caso cuando vuelva a operar.
     function test_HCSRC012_ManualFlagDoesNotOutliveTheBlockItDescribes() public {
         penalties.applyEducatorInactivityPenalty(keccak256("zero-case"), USER, 0);
         assertTrue(penalties.manualUnblockRequired(USER));
 
+        bytes32 registrar = registry.REGISTRAR_ROLE();
+        registry.revokeRole(registrar, address(penalties));
         registry.adminUnblock(USER, address(penalties));
+        registry.grantRole(registrar, address(penalties));
 
         penalties.applyRecruiterInactivityPenalty(BLOCKING_CASE, USER, 1_000 ether);
         assertFalse(penalties.manualUnblockRequired(USER), "a fresh block starts without the old flag");

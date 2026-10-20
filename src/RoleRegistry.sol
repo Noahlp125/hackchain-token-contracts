@@ -31,7 +31,9 @@ import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol"
  * mientras quede alguno. Antes había un único bool, y cualquier escritor
  * levantaba el bloqueo de otro (PenaltySystem lo hacía al liquidar deuda).
  * adminUnblock() permite al admin quitar el bloqueo de un origen que ya no
- * puede quitarlo él mismo (llave perdida o rotada).
+ * puede quitarlo él mismo (llave perdida o rotada, o un contrato retirado),
+ * siempre que antes se le haya revocado REGISTRAR_ROLE. Un origen activo
+ * gestiona solo sus propios bloqueos.
  */
 contract RoleRegistry is AccessControl {
     // --- Roles de gestión ---
@@ -72,6 +74,7 @@ contract RoleRegistry is AccessControl {
     error NotRegistered();
     error AlreadyBlocked();
     error NotBlocked();
+    error SourceStillActive();
 
     // --- Events ---
 
@@ -164,13 +167,17 @@ contract RoleRegistry is AccessControl {
     /**
      * @notice Quita el bloqueo de un origen concreto.
      * @dev Salida de emergencia para un origen que ya no puede quitarlo él
-     * mismo, por ejemplo si perdió o rotó su llave. Sin ella, ese bloqueo
-     * sería permanente.
+     * mismo, por ejemplo si perdió o rotó su llave, o un contrato retirado.
+     * Sin ella, ese bloqueo sería permanente. Exige que el origen ya no tenga
+     * REGISTRAR_ROLE: el flujo es revocar el rol y después levantar sus
+     * bloqueos. Así el admin no puede saltarse a un origen activo, por
+     * ejemplo quitar el bloqueo de PenaltySystem con deuda pendiente.
      * @param account_ Dirección bloqueada.
      * @param source_ Origen cuyo bloqueo se quita.
      */
     function adminUnblock(address account_, address source_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (!_blockedBy[account_][source_]) revert NotBlocked();
+        if (hasRole(REGISTRAR_ROLE, source_)) revert SourceStillActive();
 
         _unblock(account_, source_);
 

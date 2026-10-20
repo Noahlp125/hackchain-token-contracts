@@ -58,16 +58,31 @@ contract RoleRegistryHCSRC012Test is Test {
     }
 
     /// @dev Un origen que ya no puede quitar su bloqueo (llave perdida o
-    /// rotada) no deja el perfil bloqueado para siempre.
+    /// rotada) no deja el perfil bloqueado para siempre. El flujo es revocarle
+    /// el rol y despues levantar su bloqueo.
     function test_HCSRC012_AdminCanLiftAnOrphanedSource() public {
         vm.prank(OPERATOR_B);
         registry.setBlocked(USER);
+
+        registry.revokeRole(registry.REGISTRAR_ROLE(), OPERATOR_B);
 
         vm.expectEmit(true, true, true, false);
         emit RoleRegistry.BlockLiftedByAdmin(USER, OPERATOR_B, address(this));
         registry.adminUnblock(USER, OPERATOR_B);
 
         assertFalse(registry.isBlocked(USER), "the admin lifts the orphaned block");
+    }
+
+    /// @dev Un origen que conserva REGISTRAR_ROLE gestiona sus propios
+    /// bloqueos, y el admin no puede saltarselo.
+    function test_HCSRC012_AdminCannotLiftAnActiveSourcesBlock() public {
+        vm.prank(OPERATOR_B);
+        registry.setBlocked(USER);
+
+        vm.expectRevert(RoleRegistry.SourceStillActive.selector);
+        registry.adminUnblock(USER, OPERATOR_B);
+
+        assertTrue(registry.isBlocked(USER), "the active source keeps its block");
     }
 
     function test_HCSRC012_AdminUnblockRevertsWhenSourceHoldsNoBlock() public {
