@@ -132,4 +132,46 @@ contract PenaltySystemHCSRC011Test is Test {
 
         assertFalse(registry.isBlocked(USER), "non-blocking penalties never block");
     }
+
+    /// @dev Caso mixto: resolver el caso sin deuda no levanta el bloqueo
+    /// mientras quede deuda de otro caso. Se levanta al pagarla.
+    function test_HCSRC011_ClearManualBlockKeepsTheProfileBlockedWhileDebtRemains() public {
+        penalties.applyEducatorInactivityPenalty(ZERO_CASE, USER, 0);
+        penalties.applyRecruiterInactivityPenalty(DEBT_CASE, USER, 1_000 ether);
+
+        penalties.clearManualBlock(USER);
+
+        assertFalse(penalties.manualUnblockRequired(USER), "the zero-debt case is resolved");
+        assertTrue(registry.isBlocked(USER), "the pending debt keeps the profile blocked");
+
+        vm.prank(USER);
+        penalties.settlePenalty(DEBT_CASE);
+
+        assertFalse(registry.isBlocked(USER), "paying the debt lifts the block");
+    }
+
+    function test_HCSRC011_ClearManualBlockUnblocksWhenThereIsNoDebt() public {
+        penalties.applyEducatorInactivityPenalty(ZERO_CASE, USER, 0);
+
+        vm.expectEmit(true, false, false, false);
+        emit PenaltySystem.ManualBlockCleared(USER);
+        penalties.clearManualBlock(USER);
+
+        assertFalse(registry.isBlocked(USER), "no debt left, the block is lifted");
+    }
+
+    function test_HCSRC011_ClearManualBlockRevertsWithoutAManualBlock() public {
+        penalties.applyRecruiterInactivityPenalty(DEBT_CASE, USER, 1_000 ether);
+
+        vm.expectRevert(PenaltySystem.NoManualBlock.selector);
+        penalties.clearManualBlock(USER);
+    }
+
+    function test_HCSRC011_OnlyTheEnforcerCanClearAManualBlock() public {
+        penalties.applyEducatorInactivityPenalty(ZERO_CASE, USER, 0);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        penalties.clearManualBlock(USER);
+    }
 }

@@ -34,9 +34,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * penalizaciones bloqueantes bloquean aunque el porcentaje dé cero (evidencia
  * cero o por debajo del umbral de redondeo). Ese caso se registra sin deuda y
  * marca el perfil con manualUnblockRequired: como no hay nada que pagar,
- * settlePenalty() no puede levantarlo y solo lo levanta el enforcer con
- * unblockProfile(). Las penalizaciones que no bloquean siguen revirtiendo con
- * importe cero, porque sin bloqueo una deuda cero no tiene efecto.
+ * settlePenalty() no puede levantarlo y solo lo resuelve el enforcer con
+ * clearManualBlock(), que no desbloquea mientras quede deuda de otros casos.
+ * Las penalizaciones que no bloquean siguen revirtiendo con importe cero,
+ * porque sin bloqueo una deuda cero no tiene efecto.
  *
  * HC-SRC-012 fix: RoleRegistry guarda el bloqueo por origen. Este contrato
  * pone y quita solo el suyo, así que liquidar deuda ya no levanta un bloqueo
@@ -129,6 +130,7 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
     error PenaltyNotFound();
     error NotPenaltyOwner();
     error PenaltyAlreadySettled();
+    error NoManualBlock();
 
     // --- Events ---
     event PenaltyApplied(
@@ -139,6 +141,7 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
         bool profileBlocked
     );
     event ProfileUnblocked(address indexed user);
+    event ManualBlockCleared(address indexed user);
     event PenaltySettled(
         bytes32 indexed caseId,
         address indexed user,
@@ -397,11 +400,31 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
     // --- Profile management ---
 
     /**
+     * @notice Resuelve el bloqueo sin deuda de un usuario (HC-SRC-011) sin
+     * condonar su deuda.
+     * @dev Borra manualUnblockRequired. Si no queda deuda levanta el bloqueo
+     * de este contrato, y si queda el usuario sigue bloqueado hasta que la
+     * liquide. Es la vía normal para revisar un caso sin deuda. Para condonar
+     * está unblockProfile().
+     */
+    function clearManualBlock(address user_) external onlyRole(ENFORCER_ROLE) {
+        if (!manualUnblockRequired[user_]) revert NoManualBlock();
+        manualUnblockRequired[user_] = false;
+        emit ManualBlockCleared(user_);
+
+        if (penaltyDebt[user_] == 0 && roleRegistry.isBlockedBy(user_, address(this))) {
+            roleRegistry.setUnblocked(user_);
+            emit ProfileUnblocked(user_);
+        }
+    }
+
+    /**
      * @notice Override manual del enforcer para casos excepcionales
      * (p.ej. condonación de deuda decidida off-chain).
-     * @dev También es la única vía para levantar un bloqueo sin deuda
-     * (HC-SRC-011), así que borra manualUnblockRequired. Solo levanta el
-     * bloqueo de este contrato (HC-SRC-012), los de otros orígenes siguen.
+     * @dev Levanta el bloqueo aunque quede deuda, y borra
+     * manualUnblockRequired. Para resolver solo un bloqueo sin deuda está
+     * clearManualBlock(). Solo levanta el bloqueo de este contrato
+     * (HC-SRC-012), los de otros orígenes siguen.
      */
     function unblockProfile(address user_) external onlyRole(ENFORCER_ROLE) {
         if (!roleRegistry.isBlockedBy(user_, address(this))) revert ProfileNotBlocked();
