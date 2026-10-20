@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 pragma solidity 0.8.24;
 
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 import { PenaltySystem } from "../src/PenaltySystem.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
 import { RoleRegistry } from "../src/RoleRegistry.sol";
@@ -165,6 +165,26 @@ contract PenaltySystemHCSRC011Test is Test {
 
         vm.expectRevert(PenaltySystem.NoManualBlock.selector);
         penalties.clearManualBlock(USER);
+    }
+
+    /// @dev Un bloqueo sin deuda se anuncia con su propio evento, para que la
+    /// monitorizacion off-chain lo distinga de un error al cargar la evidencia.
+    function test_HCSRC011_BlockWithoutDebtEmitsItsOwnEvent() public {
+        vm.expectEmit(true, true, false, false);
+        emit PenaltySystem.BlockedWithoutDebt(USER, ZERO_CASE);
+        penalties.applyEducatorInactivityPenalty(ZERO_CASE, USER, 0);
+    }
+
+    /// @dev Un caso con deuda no emite BlockedWithoutDebt.
+    function test_HCSRC011_BlockWithDebtDoesNotEmitTheZeroDebtEvent() public {
+        vm.recordLogs();
+        penalties.applyEducatorInactivityPenalty(DEBT_CASE, USER, 1_000 ether);
+
+        bytes32 topic = PenaltySystem.BlockedWithoutDebt.selector;
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != topic, "a case with debt must not emit BlockedWithoutDebt");
+        }
     }
 
     function test_HCSRC011_OnlyTheEnforcerCanClearAManualBlock() public {

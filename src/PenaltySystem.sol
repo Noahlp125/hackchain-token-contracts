@@ -142,6 +142,7 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
     );
     event ProfileUnblocked(address indexed user);
     event ManualBlockCleared(address indexed user);
+    event BlockedWithoutDebt(address indexed user, bytes32 indexed caseId);
     event PenaltySettled(
         bytes32 indexed caseId,
         address indexed user,
@@ -486,6 +487,9 @@ contract PenaltySystem is AccessControl, ReentrancyGuard {
         // pendiente y el bloqueo pasa a depender del enforcer.
         if (amount_ == 0) {
             manualUnblockRequired[user_] = true;
+            // Distingue este caso de un fallo al cargar la evidencia, que
+            // antes revertía y ahora bloquea sin deuda.
+            emit BlockedWithoutDebt(user_, caseId_);
         } else {
             penaltyDebt[user_] += amount_;
             pendingPenalties[caseId_] = PendingPenalty({
