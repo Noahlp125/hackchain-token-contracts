@@ -248,4 +248,105 @@ contract MembershipSystemHCSRC001Test is Test {
 
         assertEq(memberships.totalReserved(), 2 * EDUCATOR_SHARE, "the unclaimed rollover keeps it reserved");
     }
+
+    // --- claimable() y claim por lotes ---
+
+    /// @dev claimable() devuelve exactamente lo que pagaria el claim.
+    function test_HCSRC001_ClaimableMatchesWhatTheClaimPays() public {
+        _viewer("viewer1", _one(EDUCATOR_A));
+        _viewer("viewer2", _one(EDUCATOR_A));
+        _viewer("viewer3", _one(EDUCATOR_B));
+        memberships.advanceCycle();
+
+        uint256 expected = memberships.claimable(0, EDUCATOR_A);
+        vm.prank(EDUCATOR_A);
+        memberships.claimEducatorRewards(0);
+
+        assertEq(token.balanceOf(EDUCATOR_A), expected, "claimable equals the paid reward");
+        assertEq(memberships.claimable(0, EDUCATOR_A), 0, "nothing left once claimed");
+    }
+
+    /// @dev claimable() es cero en todos los casos en los que el claim revertiria.
+    function test_HCSRC001_ClaimableIsZeroWhenNothingCanBeClaimed() public {
+        _viewer("viewer1", _one(EDUCATOR_A));
+        assertEq(memberships.claimable(0, EDUCATOR_A), 0, "open cycle");
+
+        memberships.advanceCycle();
+        assertEq(memberships.claimable(0, EDUCATOR_B), 0, "educator without views");
+        assertEq(memberships.claimable(0, makeAddr("stranger")), 0, "not an educator");
+        assertEq(memberships.claimable(1, EDUCATOR_A), 0, "cycle never closed");
+
+        registry.setBlocked(EDUCATOR_A);
+        assertEq(memberships.claimable(0, EDUCATOR_A), 0, "blocked educator");
+        registry.setUnblocked(EDUCATOR_A);
+
+        vm.warp(block.timestamp + memberships.UNCLAIMED_ROLLOVER_WINDOW());
+        memberships.rollOverUnclaimed(0);
+        assertEq(memberships.claimable(0, EDUCATOR_A), 0, "rolled-over cycle");
+    }
+
+    function test_HCSRC001_BatchClaimsSeveralCyclesInOneTransaction() public {
+        _viewer("viewer1", _one(EDUCATOR_A));
+        memberships.advanceCycle();
+        _viewer("viewer2", _one(EDUCATOR_A));
+        memberships.advanceCycle();
+
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = 0;
+        ids[1] = 1;
+        vm.prank(EDUCATOR_A);
+        memberships.claimEducatorRewardsBatch(ids);
+
+        assertEq(token.balanceOf(EDUCATOR_A), 2 * EDUCATOR_SHARE, "both cycles paid");
+        assertTrue(memberships.rewardsClaimed(0, EDUCATOR_A) && memberships.rewardsClaimed(1, EDUCATOR_A));
+    }
+
+    /// @dev Si un ciclo del lote no se puede reclamar, no se reclama ninguno.
+    function test_HCSRC001_BatchRevertsEntirelyIfOneCycleFails() public {
+        _viewer("viewer1", _one(EDUCATOR_A));
+        memberships.advanceCycle();
+
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = 0;
+        ids[1] = 1; // ciclo abierto
+        vm.prank(EDUCATOR_A);
+        vm.expectRevert(MembershipSystem.CycleNotClosed.selector);
+        memberships.claimEducatorRewardsBatch(ids);
+
+        assertFalse(memberships.rewardsClaimed(0, EDUCATOR_A), "the valid cycle was not claimed either");
+    }
+
+    function test_HCSRC001_BatchRejectsRepeatedCycles() public {
+        _viewer("viewer1", _one(EDUCATOR_A));
+        memberships.advanceCycle();
+
+        uint256[] memory ids = new uint256[](2);
+        vm.prank(EDUCATOR_A);
+        vm.expectRevert(MembershipSystem.RewardsAlreadyClaimed.selector);
+        memberships.claimEducatorRewardsBatch(ids);
+    }
+
+    function test_HCSRC001_BatchRejectsEmptyAndOversizedLists() public {
+        uint256 max = memberships.MAX_CLAIM_BATCH();
+
+        vm.startPrank(EDUCATOR_A);
+        vm.expectRevert(MembershipSystem.EmptyBatch.selector);
+        memberships.claimEducatorRewardsBatch(new uint256[](0));
+
+        vm.expectRevert(MembershipSystem.BatchTooLarge.selector);
+        memberships.claimEducatorRewardsBatch(new uint256[](max + 1));
+        vm.stopPrank();
+    }
+
+    /// @dev El lote aplica las mismas comprobaciones de bloqueo que el claim.
+    function test_HCSRC001_BatchRespectsTheProfileBlock() public {
+        _viewer("viewer1", _one(EDUCATOR_A));
+        memberships.advanceCycle();
+        registry.setBlocked(EDUCATOR_A);
+
+        uint256[] memory ids = new uint256[](1);
+        vm.prank(EDUCATOR_A);
+        vm.expectRevert(MembershipSystem.ProfileBlocked.selector);
+        memberships.claimEducatorRewardsBatch(ids);
+    }
 }

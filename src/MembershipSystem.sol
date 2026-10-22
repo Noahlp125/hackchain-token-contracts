@@ -68,6 +68,9 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     // cual lo no reclamado puede pasar al ciclo abierto (HC-SRC-001)
     uint256 public constant UNCLAIMED_ROLLOVER_WINDOW = 90 days;
 
+    // Máximo de ciclos por llamada a claimEducatorRewardsBatch()
+    uint256 public constant MAX_CLAIM_BATCH = 50;
+
     // --- Enums ---
     enum AcademicTier {
         None,
@@ -159,6 +162,8 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     error RewardsAlreadyClaimed();
     error CycleRolledOver();
     error RolloverWindowStillOpen();
+    error EmptyBatch();
+    error BatchTooLarge();
 
     // --- Events ---
 
@@ -413,27 +418,31 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
      * @param cycleId_ Ciclo cerrado cuya parte se reclama.
      */
     function claimEducatorRewards(uint256 cycleId_) external nonReentrant {
-        if (roleRegistry.isBlocked(msg.sender)) revert ProfileBlocked();
-        if (!roleRegistry.isEducator(msg.sender)) revert NotEducator();
-        if (cycleId_ >= currentCycle) revert CycleNotClosed();
-        if (rewardsClaimed[cycleId_][msg.sender]) revert RewardsAlreadyClaimed();
-
-        Cycle storage cycle = cycles[cycleId_];
-        if (cycle.rolledOver) revert CycleRolledOver();
-
-        uint256 views = educatorCycleViews[cycleId_][msg.sender];
-        if (views == 0) revert NoPendingRewards();
-
-        uint256 reward = (cycle.pool * views) / cycle.totalViews;
-        if (reward == 0) revert NoPendingRewards();
-
-        rewardsClaimed[cycleId_][msg.sender] = true;
-        cycle.claimed += reward;
-        totalReserved -= reward;
+        _checkCanClaim(msg.sender);
+        uint256 reward = _claim(cycleId_, msg.sender);
 
         hackToken.safeTransfer(msg.sender, reward);
+    }
 
-        emit EducatorRewardsDistributed(msg.sender, cycleId_, reward);
+    /**
+     * @notice Claim the educator's share of several closed cycles in one
+     * transaction.
+     * @dev Mismas reglas que claimEducatorRewards() para cada ciclo. Si alguno
+     * no se puede reclamar, revierte entera. El frontend sabe cuáles elegir
+     * con claimable(). Como máximo MAX_CLAIM_BATCH ciclos por llamada.
+     * @param cycleIds_ Ciclos cerrados cuya parte se reclama.
+     */
+    function claimEducatorRewardsBatch(uint256[] calldata cycleIds_) external nonReentrant {
+        if (cycleIds_.length == 0) revert EmptyBatch();
+        if (cycleIds_.length > MAX_CLAIM_BATCH) revert BatchTooLarge();
+        _checkCanClaim(msg.sender);
+
+        uint256 total;
+        for (uint256 i = 0; i < cycleIds_.length; i++) {
+            total += _claim(cycleIds_[i], msg.sender);
+        }
+
+        hackToken.safeTransfer(msg.sender, total);
     }
 
     /**
@@ -457,6 +466,22 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     }
 
     // --- Views ---
+
+    /**
+     * @notice Lo que pagaría ahora claimEducatorRewards(cycleId_) a educator_.
+     * @dev Cero si no se puede reclamar: ciclo abierto, ya reclamado o
+     * trasladado, sin vistas, o educador bloqueado o sin el rol. Así el
+     * frontend no tiene que replicar ninguna regla.
+     */
+    function claimable(uint256 cycleId_, address educator_) external view returns (uint256) {
+        if (roleRegistry.isBlocked(educator_) || !roleRegistry.isEducator(educator_)) return 0;
+        if (cycleId_ >= currentCycle || rewardsClaimed[cycleId_][educator_]) return 0;
+
+        Cycle storage cycle = cycles[cycleId_];
+        if (cycle.rolledOver || cycle.totalViews == 0) return 0;
+
+        return (cycle.pool * educatorCycleViews[cycleId_][educator_]) / cycle.totalViews;
+    }
 
     /**
      * @notice Check if a user has an active advanced membership.
@@ -506,6 +531,34 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     function _isAdvancedActive(address user_) internal view returns (bool) {
         AdvancedMembership storage m = advancedMemberships[user_];
         return m.active && m.expiresAt > block.timestamp;
+    }
+
+    /// @dev Comprobaciones sobre quien reclama (HC-SRC-002 y HC-SRC-004).
+    function _checkCanClaim(address educator_) internal view {
+        if (roleRegistry.isBlocked(educator_)) revert ProfileBlocked();
+        if (!roleRegistry.isEducator(educator_)) revert NotEducator();
+    }
+
+    /// @dev Valida y registra el claim de un ciclo, sin transferir. Devuelve
+    /// lo que corresponde al educador en ese ciclo.
+    function _claim(uint256 cycleId_, address educator_) internal returns (uint256 reward) {
+        if (cycleId_ >= currentCycle) revert CycleNotClosed();
+        if (rewardsClaimed[cycleId_][educator_]) revert RewardsAlreadyClaimed();
+
+        Cycle storage cycle = cycles[cycleId_];
+        if (cycle.rolledOver) revert CycleRolledOver();
+
+        uint256 views = educatorCycleViews[cycleId_][educator_];
+        if (views == 0) revert NoPendingRewards();
+
+        reward = (cycle.pool * views) / cycle.totalViews;
+        if (reward == 0) revert NoPendingRewards();
+
+        rewardsClaimed[cycleId_][educator_] = true;
+        cycle.claimed += reward;
+        totalReserved -= reward;
+
+        emit EducatorRewardsDistributed(educator_, cycleId_, reward);
     }
 
     /// @dev Marca el ciclo como trasladado y suma el importe al ciclo abierto.
