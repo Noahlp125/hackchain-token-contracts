@@ -133,6 +133,11 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
     // cycle => educator => ya reclamó su parte de ese ciclo
     mapping(uint256 => mapping(address => bool)) public rewardsClaimed;
 
+    /// @notice Total pendiente de pagar a educadores, en todos los ciclos.
+    /// Sube con cada cuota destinada a educadores y baja con cada claim. Lo que
+    /// se traslada entre ciclos no lo cambia, porque sigue siendo de educadores.
+    uint256 public totalReserved;
+
     // cycle => viewer => educator => ya contado en este ciclo
     mapping(uint256 => mapping(address => mapping(address => bool)))
         public hasCountedView;
@@ -361,6 +366,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
 
         // La parte para educadores cuenta en el ciclo abierto
         cycles[currentCycle].pool += educatorAmount;
+        totalReserved += educatorAmount;
 
         // Register membership
         uint256 expiresAt = block.timestamp + duration;
@@ -423,6 +429,7 @@ contract MembershipSystem is AccessControl, ReentrancyGuard {
 
         rewardsClaimed[cycleId_][msg.sender] = true;
         cycle.claimed += reward;
+        totalReserved -= reward;
 
         hackToken.safeTransfer(msg.sender, reward);
 

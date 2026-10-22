@@ -218,4 +218,34 @@ contract MembershipSystemHCSRC001Test is Test {
         (, , uint256 claimed) = _cycle(0);
         assertLe(claimed, cyclePool, "claims never exceed the cycle pool");
     }
+
+    /// @dev totalReserved sube con cada cuota para educadores, baja con cada
+    /// claim y coincide con lo que el contrato tiene guardado para ellos.
+    function test_HCSRC001_TotalReservedTracksFeesAndClaims() public {
+        _viewer("viewer1", _one(EDUCATOR_A));
+        _viewer("viewer2", _one(EDUCATOR_B));
+        assertEq(memberships.totalReserved(), 2 * EDUCATOR_SHARE, "both fees reserved");
+
+        memberships.advanceCycle();
+        vm.prank(EDUCATOR_A);
+        memberships.claimEducatorRewards(0);
+
+        assertEq(memberships.totalReserved(), EDUCATOR_SHARE, "A's claim leaves B's share reserved");
+        assertEq(token.balanceOf(address(memberships)), memberships.totalReserved(), "reserve matches the balance");
+    }
+
+    /// @dev Trasladar entre ciclos no cambia lo reservado, porque sigue siendo
+    /// de educadores. Vale para el pase automatico y para el de lo no reclamado.
+    function test_HCSRC001_RolloversDoNotChangeTotalReserved() public {
+        _viewer("viewer1", _none());
+        memberships.advanceCycle();
+        assertEq(memberships.totalReserved(), EDUCATOR_SHARE, "the empty cycle's pool stays reserved");
+
+        _viewer("viewer2", _one(EDUCATOR_A));
+        memberships.advanceCycle();
+        vm.warp(block.timestamp + memberships.UNCLAIMED_ROLLOVER_WINDOW());
+        memberships.rollOverUnclaimed(1);
+
+        assertEq(memberships.totalReserved(), 2 * EDUCATOR_SHARE, "the unclaimed rollover keeps it reserved");
+    }
 }
