@@ -21,6 +21,16 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
  * HC-SRC-005 fix: consulta StakingContract.hasNoCommission() sobre el
  * pagador. Si tiene el beneficio, no paga la comisión, transfiere solo el
  * neto, y el beneficiario recibe lo mismo que recibiría sin la exención.
+ *
+ * El beneficio exige un stake de ONE_YEAR de al menos 100.000 HACK, ya
+ * madurado, y activado con activateNoCommission(). Se pierde al retirar ese
+ * stake o al desactivarlo. Como el stake tiene que haber madurado un año
+ * antes de activarse, no se puede hacer stake, pagar sin comisión y retirar
+ * en la misma transacción.
+ *
+ * Si la consulta falla (revierte, agota su gas o devuelve algo que no es un
+ * bool), se cobra la comisión normal y se emite ExemptionCheckFailed. Falla
+ * cerrado: un fallo de la fuente nunca bloquea los pagos ni exime a nadie.
  */
 contract CommissionSystem is AccessControl, ReentrancyGuard {
     // --- Roles ---
@@ -45,6 +55,10 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
 
     /// @notice Denominador para el cálculo de comisión (10_000 = 100%).
     uint256 public constant BPS_DENOMINATOR = 10_000;
+
+    /// @notice Gas máximo que se reenvía a hasNoCommission(). La consulta de
+    /// StakingContract son unas pocas lecturas de storage, muy por debajo.
+    uint256 public constant EXEMPTION_CHECK_GAS = 50_000;
 
     /// @notice Total de comisiones cobradas históricamente (en HACK).
     uint256 public totalCommissionsCollected;
@@ -83,6 +97,10 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
 
     /// @dev Emitido cuando el admin actualiza la fuente de la exención.
     event StakingContractUpdated(address indexed oldStaking, address indexed newStaking);
+
+    /// @dev Emitido cuando la consulta de la exención falla y se cobra la
+    /// comisión normal.
+    event ExemptionCheckFailed(bytes32 indexed evidenceId, address indexed payer);
 
     // --- Constructor ---
 
@@ -139,7 +157,10 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
         uint256 commissionAmount = (grossAmount_ * commissionBps) / BPS_DENOMINATOR;
         netAmount = grossAmount_ - commissionAmount;
 
-        if (stakingContract.hasNoCommission(payer_)) {
+        (bool exempt, bool checked) = _checkExemption(payer_);
+        if (!checked) emit ExemptionCheckFailed(evidenceId_, payer_);
+
+        if (exempt) {
             // El pagador con exención no paga la comisión. El beneficiario
             // recibe el mismo neto que sin exención.
             bool successWaived = hackToken.transferFrom(payer_, payee_, netAmount);
@@ -234,10 +255,40 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
         uint256 fee = (grossAmount_ * commissionBps) / BPS_DENOMINATOR;
         payeeReceives = grossAmount_ - fee;
 
-        if (stakingContract.hasNoCommission(payer_)) {
+        (bool exempt, ) = _checkExemption(payer_);
+        if (exempt) {
             return (0, payeeReceives, payeeReceives);
         }
         return (fee, grossAmount_, payeeReceives);
+    }
+
+    // --- Internal ---
+
+    /**
+     * @dev Consulta hasNoCommission() con un límite de gas y sin propagar el
+     * fallo. No usa try/catch porque no captura una dirección sin código ni
+     * una respuesta mal formada. Solo cuenta como exento un 1 en exactamente
+     * 32 bytes de respuesta.
+     *
+     * No hace falta distinguir un fallo por falta de gas en la transacción.
+     * Si la consulta se queda sin gas, el 1/64 que queda tras ella no alcanza
+     * para completar ni el cobro ni la vista, y la transacción revierte, así
+     * que no se le puede cobrar la comisión a un exento por esa vía. Los
+     * fuzz de gas bajo de CommissionSystemHCSRC005Test lo comprueban.
+     * @param payer_ Dirección de la que salen los fondos.
+     * @return exempt Si el pagador tiene la exención.
+     * @return checked Si la consulta respondió de forma válida.
+     */
+    function _checkExemption(address payer_) internal view returns (bool exempt, bool checked) {
+        (bool success, bytes memory data) = address(stakingContract).staticcall{ gas: EXEMPTION_CHECK_GAS }(
+            abi.encodeCall(IStakingContract.hasNoCommission, (payer_))
+        );
+
+        if (!success || data.length != 32) return (false, false);
+
+        uint256 result = abi.decode(data, (uint256));
+        if (result > 1) return (false, false);
+        return (result == 1, true);
     }
 }
 

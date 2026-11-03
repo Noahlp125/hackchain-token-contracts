@@ -9,6 +9,31 @@ import { IncentivesPool } from "../src/IncentivesPool.sol";
 import { RoleRegistry } from "../src/RoleRegistry.sol";
 import { StakingContract } from "../src/StakingContract.sol";
 
+/// @dev Fuentes de exencion rotas para comprobar que el cobro falla cerrado.
+contract RevertingStaking {
+    function hasNoCommission(address) external pure returns (bool) {
+        revert("staking down");
+    }
+}
+
+contract GasBurningStaking {
+    function hasNoCommission(address) external view returns (bool exempt) {
+        while (gasleft() > 0) {
+            exempt = !exempt;
+        }
+    }
+}
+
+contract SilentStaking {
+    fallback() external { }
+}
+
+contract MalformedStaking {
+    function hasNoCommission(address) external pure returns (uint256) {
+        return 2;
+    }
+}
+
 /// @dev Regresiones de HC-SRC-005: CommissionSystem consulta el beneficio de
 /// no pagar comision de StakingContract. Un pagador con el beneficio no paga
 /// la comision, y el beneficiario recibe lo mismo que sin el.
@@ -160,5 +185,91 @@ contract CommissionSystemHCSRC005Test is Test {
     function test_HCSRC005_ConstructorRejectsZeroStakingSource() public {
         vm.expectRevert(CommissionSystem.InvalidAddress.selector);
         new CommissionSystem(address(token), TREASURY, address(0));
+    }
+
+    /// @dev Un pagador con la exencion paga la comision normal si la fuente
+    /// falla, el pago no se bloquea y el fallo queda en un evento.
+    function _assertFailsClosed(address source_) internal {
+        _activateBenefit();
+        commission.setStakingContract(source_);
+        bytes32 evidenceId = keccak256("tx");
+
+        vm.expectEmit(true, true, false, false);
+        emit CommissionSystem.ExemptionCheckFailed(evidenceId, PAYER);
+        _collect(evidenceId);
+
+        assertEq(token.balanceOf(TREASURY), FEE, "the normal commission is charged");
+        assertEq(token.balanceOf(PAYEE), GROSS - FEE, "the payment goes through");
+    }
+
+    function test_HCSRC005_RevertingStakingSourceChargesTheCommission() public {
+        _assertFailsClosed(address(new RevertingStaking()));
+    }
+
+    function test_HCSRC005_GasBurningStakingSourceChargesTheCommission() public {
+        _assertFailsClosed(address(new GasBurningStaking()));
+    }
+
+    function test_HCSRC005_StakingSourceWithoutReturnDataChargesTheCommission() public {
+        _assertFailsClosed(address(new SilentStaking()));
+    }
+
+    function test_HCSRC005_MalformedExemptionAnswerChargesTheCommission() public {
+        _assertFailsClosed(address(new MalformedStaking()));
+    }
+
+    function test_HCSRC005_PreviewForFailsClosedWhenTheSourceFails() public {
+        _activateBenefit();
+        commission.setStakingContract(address(new RevertingStaking()));
+
+        (uint256 fee, uint256 pays, uint256 receives) = commission.previewCommissionFor(PAYER, GROSS);
+        assertEq(fee, FEE, "the preview shows the normal commission");
+        assertEq(pays, GROSS);
+        assertEq(receives, GROSS - FEE);
+    }
+
+    /// @dev Con poco gas la llamada puede revertir, pero si sale adelante un
+    /// pagador con la exencion nunca paga la comision.
+    function testFuzz_HCSRC005_LowGasNeverChargesAnExemptPayer(uint256 gas_) public {
+        _activateBenefit();
+        gas_ = bound(gas_, 30_000, 300_000);
+
+        try commission.collectCommission{ gas: gas_ }(keccak256("tx"), PAYER, PAYEE, GROSS, "payment") {
+            assertEq(token.balanceOf(TREASURY), 0, "an exempt payer is never charged");
+            assertEq(token.balanceOf(PAYEE), GROSS - FEE, "the payee gets the net");
+        } catch {
+            assertEq(token.balanceOf(TREASURY), 0, "a reverted call charges nothing");
+        }
+    }
+
+    /// @dev En la vista no hay transferencias despues de la consulta que
+    /// hagan revertir por falta de gas. Si responde, para un pagador con la
+    /// exencion nunca muestra la comision.
+    function testFuzz_HCSRC005_LowGasNeverMakesThePreviewChargeAnExemptPayer(uint256 gas_) public {
+        _activateBenefit();
+        gas_ = bound(gas_, 1_000, 60_000);
+
+        try commission.previewCommissionFor{ gas: gas_ }(PAYER, GROSS) returns (uint256 fee, uint256, uint256) {
+            assertEq(fee, 0, "an exempt payer is never shown the commission");
+        } catch { }
+    }
+
+    /// @dev La exencion exige un stake de un ano ya madurado. Hacer stake y
+    /// pagar en el mismo bloque no la da, y el stake no se puede retirar.
+    function test_HCSRC005_StakeAndPayInTheSameBlockChargesTheCommission() public {
+        uint256 oneYear = staking.ONE_YEAR();
+        vm.startPrank(PAYER);
+        staking.stake(STAKE, oneYear);
+
+        vm.expectRevert(StakingContract.NoCommissionStakeNotMature.selector);
+        staking.activateNoCommission(0);
+        vm.stopPrank();
+
+        _collect(keccak256("tx"));
+        assertEq(token.balanceOf(TREASURY), FEE, "no exemption without a matured stake");
+
+        vm.prank(PAYER);
+        vm.expectRevert(StakingContract.StakingPeriodNotOver.selector);
+        staking.withdrawPrincipal(0);
     }
 }
