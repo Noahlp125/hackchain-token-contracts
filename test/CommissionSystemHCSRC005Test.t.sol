@@ -161,7 +161,7 @@ contract CommissionSystemHCSRC005Test is Test {
     }
 
     function test_HCSRC005_AdminCanUpdateTheStakingSource() public {
-        address newStaking = makeAddr("new-staking");
+        address newStaking = address(new RevertingStaking());
 
         vm.expectEmit(true, true, false, false);
         emit CommissionSystem.StakingContractUpdated(address(staking), newStaking);
@@ -185,6 +185,19 @@ contract CommissionSystemHCSRC005Test is Test {
     function test_HCSRC005_ConstructorRejectsZeroStakingSource() public {
         vm.expectRevert(CommissionSystem.InvalidAddress.selector);
         new CommissionSystem(address(token), TREASURY, address(0));
+    }
+
+    /// @dev Una EOA como fuente no responderia nunca. Como una consulta
+    /// fallida cobra la comision normal, dejaria sin exencion a todos los
+    /// pagadores.
+    function test_HCSRC005_StakingSourceMustBeAContract() public {
+        address eoa = makeAddr("eoa");
+
+        vm.expectRevert(CommissionSystem.InvalidAddress.selector);
+        commission.setStakingContract(eoa);
+
+        vm.expectRevert(CommissionSystem.InvalidAddress.selector);
+        new CommissionSystem(address(token), TREASURY, eoa);
     }
 
     /// @dev Un pagador con la exencion paga la comision normal si la fuente

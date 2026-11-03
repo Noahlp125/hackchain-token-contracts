@@ -114,7 +114,8 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
     constructor(address hackToken_, address treasury_, address stakingContract_) {
         if (hackToken_ == address(0)) revert InvalidAddress();
         if (treasury_ == address(0)) revert InvalidAddress();
-        if (stakingContract_ == address(0)) revert InvalidAddress();
+        // Exigir código descarta también la dirección 0 y cualquier EOA.
+        if (stakingContract_.code.length == 0) revert InvalidAddress();
 
         hackToken = IERC20(hackToken_);
         treasury = treasury_;
@@ -211,10 +212,14 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
 
     /**
      * @notice Actualiza la fuente de la exención de comisión.
-     * @param newStaking_ Nueva dirección de StakingContract.
+     * @dev Cambiar esta dirección equivale a conceder o quitar exenciones,
+     * con el mismo poder que setTreasury() o setCommissionRate(). Por eso
+     * DEFAULT_ADMIN_ROLE debe ser la multifirma del despliegue.
+     * @param newStaking_ Nueva dirección de StakingContract. Debe ser un
+     * contrato, lo que descarta también la dirección 0 y cualquier EOA.
      */
     function setStakingContract(address newStaking_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newStaking_ == address(0)) revert InvalidAddress();
+        if (newStaking_.code.length == 0) revert InvalidAddress();
         address old = address(stakingContract);
         stakingContract = IStakingContract(newStaking_);
         emit StakingContractUpdated(old, newStaking_);
