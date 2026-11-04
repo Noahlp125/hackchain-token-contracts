@@ -6,6 +6,7 @@ import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.so
 import { CommissionSystem } from "../src/CommissionSystem.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
 import { IncentivesPool } from "../src/IncentivesPool.sol";
+import { MentorshipSessions } from "../src/MentorshipSessions.sol";
 import { RoleRegistry } from "../src/RoleRegistry.sol";
 import { StakingContract } from "../src/StakingContract.sol";
 
@@ -327,6 +328,80 @@ contract CommissionSystemHCSRC005Test is Test {
         }
         assertEq(collected, 1, "one transaction record");
         assertEq(waived, 1, "one waiver note");
+    }
+
+    /// @dev Con y sin exencion el beneficiario recibe exactamente el mismo
+    /// neto, redondeo incluido, para cualquier bruto y cualquier tasa
+    /// permitida. Lo que pagan los dos pagadores cuadra con tesoreria.
+    function testFuzz_HCSRC005_NetIsIdenticalOnBothPaths(uint256 gross_, uint256 bps_) public {
+        gross_ = bound(gross_, 1, 5_000 ether);
+        bps_ = bound(bps_, 0, 2_000);
+        commission.setCommissionRate(bps_);
+
+        address otherPayer = makeAddr("other-payer");
+        address otherPayee = makeAddr("other-payee");
+        token.mintTokens(otherPayer, gross_);
+        vm.prank(otherPayer);
+        token.approve(address(commission), type(uint256).max);
+
+        _activateBenefit();
+        uint256 exemptBefore = token.balanceOf(PAYER);
+        uint256 fee = (gross_ * bps_) / commission.BPS_DENOMINATOR();
+
+        commission.collectCommission(keccak256("exempt"), PAYER, PAYEE, gross_, "payment");
+        commission.collectCommission(keccak256("normal"), otherPayer, otherPayee, gross_, "payment");
+
+        assertEq(token.balanceOf(PAYEE), token.balanceOf(otherPayee), "same net on both paths");
+        assertEq(token.balanceOf(PAYEE), gross_ - fee, "the net is the gross minus the rounded fee");
+        assertEq(exemptBefore - token.balanceOf(PAYER), gross_ - fee, "the exempt payer pays only the net");
+        assertEq(token.balanceOf(otherPayer), 0, "the other payer pays the gross");
+        assertEq(token.balanceOf(TREASURY), fee, "treasury gets only the non-exempt fee");
+    }
+
+    /// @dev Las clases 1 a 1 del Mecanismo 12 se pagan fuera de la cadena.
+    /// MentorshipSessions no mueve tokens ni llama a CommissionSystem, asi que
+    /// en una clase completa nadie paga comision.
+    function test_HCSRC005_OneToOneSessionChargesNoCommission() public {
+        RoleRegistry registry = new RoleRegistry();
+        registry.grantRole(registry.REGISTRAR_ROLE(), address(this));
+        address talent = makeAddr("talent");
+        address educator = makeAddr("educator");
+        registry.registerRole(talent, RoleRegistry.BusinessRole.Talent);
+        registry.registerRole(educator, RoleRegistry.BusinessRole.Educator);
+        MentorshipSessions mentorship = new MentorshipSessions(address(registry));
+
+        token.mintTokens(talent, GROSS);
+        token.mintTokens(educator, GROSS);
+
+        vm.recordLogs();
+        vm.prank(talent);
+        uint256 sessionId = mentorship.requestSession(educator);
+        vm.prank(educator);
+        mentorship.acceptSession(sessionId);
+        vm.prank(talent);
+        mentorship.submitDepositProof(sessionId, "ipfs://deposit-proof");
+        vm.prank(educator);
+        mentorship.confirmDeposit(sessionId, true);
+        vm.prank(talent);
+        mentorship.submitFinalProof(sessionId, "ipfs://final-proof");
+        vm.prank(educator);
+        mentorship.confirmFinal(sessionId, true);
+        vm.prank(educator);
+        mentorship.issueCertificate(sessionId, "ipfs://certificate");
+        vm.prank(talent);
+        mentorship.confirmSessionCompleted(sessionId);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        MentorshipSessions.Session memory s = mentorship.getSession(sessionId);
+        assertEq(uint8(s.status), uint8(MentorshipSessions.SessionStatus.Completed), "the session completes");
+
+        assertEq(token.balanceOf(talent), GROSS, "the talent pays nothing on-chain");
+        assertEq(token.balanceOf(educator), GROSS, "the educator receives nothing on-chain");
+        assertEq(token.balanceOf(TREASURY), 0, "no commission");
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].emitter != address(commission), "CommissionSystem is not involved");
+            assertTrue(logs[i].emitter != address(token), "no token moves");
+        }
     }
 
     /// @dev La exencion exige un stake de un ano ya madurado. Hacer stake y
