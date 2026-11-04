@@ -64,6 +64,8 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
     uint256 public totalCommissionsCollected;
 
     /// @notice Registro de evidenceIds ya procesados para evitar cobros duplicados.
+    /// Solo guarda si se procesó, no el importe. Los importes quedan en
+    /// CommissionCollected.
     mapping(bytes32 => bool) public processedTx;
 
     // --- Custom Errors ---
@@ -76,7 +78,11 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
 
     // --- Events ---
 
-    /// @dev Emitido cuando se cobra una comisión sobre una transacción.
+    /// @dev Emitido una vez por cada evidenceId procesado, con o sin exención.
+    /// Es el registro de la transacción para el indexador: sumar
+    /// commissionAmount da el total cobrado. Con exención commissionAmount es
+    /// 0 y el pagador transfirió grossAmount menos la comisión de
+    /// CommissionWaived.
     event CommissionCollected(
         bytes32 indexed evidenceId,
         address indexed payer,
@@ -92,7 +98,9 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
 
     /// @dev Emitido junto a CommissionCollected cuando el pagador tiene la
-    /// exención. waivedAmount es la comisión que habría pagado.
+    /// exención. waivedAmount es la comisión que habría pagado. Es
+    /// complementario, no una transacción aparte: el indexador no debe
+    /// contarlo como cobro ni como transacción.
     event CommissionWaived(bytes32 indexed evidenceId, address indexed payer, uint256 waivedAmount);
 
     /// @dev Emitido cuando el admin actualiza la fuente de la exención.
@@ -133,7 +141,9 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
      * debe haber hecho previamente approve() de grossAmount_ hacia este contrato.
      * @param evidenceId_ Identificador único de la transacción origen (p.ej. certId
      * o hiringId del contrato que llama). Evita el reprocesado de la misma transacción.
-     * @param payer_ Dirección que paga la transacción (usuario).
+     * @param payer_ Dirección que paga la transacción (usuario). La exención
+     * se consulta sobre esta dirección, de la que salen los fondos, y no sobre
+     * msg.sender, que es el contrato transaccional.
      * @param payee_ Dirección que recibe el neto de la transacción (p.ej. Educador).
      * @param grossAmount_ Monto bruto de la transacción, en HACK.
      * @param reason_ Descripción legible de la transacción (p.ej. "certificate_emission").
@@ -229,6 +239,8 @@ contract CommissionSystem is AccessControl, ReentrancyGuard {
 
     /**
      * @notice Calcula la comisión que se cobraría sobre un monto dado, sin ejecutarla.
+     * @dev No aplica la exención de HC-SRC-005, porque no sabe quién paga.
+     * Para lo que pagaría un pagador concreto, usar previewCommissionFor().
      * @param grossAmount_ Monto bruto de la transacción.
      * @return commissionAmount Comisión resultante.
      * @return netAmount Monto neto tras descontar la comisión.

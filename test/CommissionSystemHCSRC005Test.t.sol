@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 pragma solidity 0.8.24;
 
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { CommissionSystem } from "../src/CommissionSystem.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
@@ -69,13 +69,24 @@ contract CommissionSystemHCSRC005Test is Test {
 
     /// @dev Stake de 100.000 HACK a un ano, madurado y con el beneficio activo.
     function _activateBenefit() internal {
+        _activateBenefitFor(PAYER);
+    }
+
+    /// @dev La cuenta tiene que tener el stake y el approve hacia staking.
+    function _activateBenefitFor(address account_) internal {
         uint256 oneYear = staking.ONE_YEAR();
-        vm.startPrank(PAYER);
+        vm.startPrank(account_);
         staking.stake(STAKE, oneYear);
         vm.warp(block.timestamp + oneYear);
         staking.activateNoCommission(0);
         vm.stopPrank();
-        assertTrue(staking.hasNoCommission(PAYER));
+        assertTrue(staking.hasNoCommission(account_));
+    }
+
+    /// @dev Un contrato transaccional distinto del pagador, con TRANSACTION_ROLE.
+    function _transactionCaller() internal returns (address caller) {
+        caller = makeAddr("transaction-contract");
+        commission.grantRole(commission.TRANSACTION_ROLE(), caller);
     }
 
     function _collect(bytes32 evidenceId_) internal returns (uint256 net) {
@@ -265,6 +276,57 @@ contract CommissionSystemHCSRC005Test is Test {
         try commission.previewCommissionFor{ gas: gas_ }(PAYER, GROSS) returns (uint256 fee, uint256, uint256) {
             assertEq(fee, 0, "an exempt payer is never shown the commission");
         } catch { }
+    }
+
+    /// @dev La exencion del contrato que llama no exime al pagador.
+    function test_HCSRC005_CallerExemptionDoesNotExemptThePayer() public {
+        address caller = _transactionCaller();
+        token.mintTokens(caller, STAKE);
+        vm.prank(caller);
+        token.approve(address(staking), STAKE);
+        _activateBenefitFor(caller);
+
+        vm.prank(caller);
+        commission.collectCommission(keccak256("tx"), PAYER, PAYEE, GROSS, "payment");
+
+        assertEq(token.balanceOf(TREASURY), FEE, "the payer pays, so the payer's status decides");
+    }
+
+    /// @dev Un pagador con la exencion no paga aunque quien llama no la tenga.
+    function test_HCSRC005_PayerExemptionAppliesWhateverTheCaller() public {
+        address caller = _transactionCaller();
+        _activateBenefit();
+        assertFalse(staking.hasNoCommission(caller));
+
+        vm.prank(caller);
+        commission.collectCommission(keccak256("tx"), PAYER, PAYEE, GROSS, "payment");
+
+        assertEq(token.balanceOf(TREASURY), 0, "the payer's exemption applies");
+        assertEq(token.balanceOf(PAYEE), GROSS - FEE);
+    }
+
+    /// @dev Con exencion hay un solo CommissionCollected por transaccion, con
+    /// comision 0, mas un CommissionWaived. El indexador cuenta el primero.
+    function test_HCSRC005_WaivedPaymentEmitsOneCollectedRecord() public {
+        _activateBenefit();
+
+        vm.recordLogs();
+        _collect(keccak256("tx"));
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        uint256 collected;
+        uint256 waived;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter != address(commission)) continue;
+            if (logs[i].topics[0] == CommissionSystem.CommissionCollected.selector) {
+                collected++;
+                (, uint256 commissionAmount, ) = abi.decode(logs[i].data, (uint256, uint256, string));
+                assertEq(commissionAmount, 0, "the record carries a zero commission");
+            }
+            if (logs[i].topics[0] == CommissionSystem.CommissionWaived.selector) waived++;
+        }
+        assertEq(collected, 1, "one transaction record");
+        assertEq(waived, 1, "one waiver note");
     }
 
     /// @dev La exencion exige un stake de un ano ya madurado. Hacer stake y
