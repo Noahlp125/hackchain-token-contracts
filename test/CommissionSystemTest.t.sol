@@ -4,6 +4,9 @@ pragma solidity 0.8.24;
 import { Test } from "forge-std/Test.sol";
 import { CommissionSystem } from "../src/CommissionSystem.sol";
 import { HackToken } from "../src/HackTokenERC20.sol";
+import { IncentivesPool } from "../src/IncentivesPool.sol";
+import { RoleRegistry } from "../src/RoleRegistry.sol";
+import { StakingContract } from "../src/StakingContract.sol";
 
 contract CommissionSystemTest is Test {
     CommissionSystem commission;
@@ -17,7 +20,10 @@ contract CommissionSystemTest is Test {
         token = new HackToken(address(this));
         token.mintTokens(PAYER, 10_000 ether);
 
-        commission = new CommissionSystem(address(token), TREASURY);
+        StakingContract staking = new StakingContract(
+            address(token), address(new IncentivesPool(address(token))), address(new RoleRegistry())
+        );
+        commission = new CommissionSystem(address(token), TREASURY, address(staking));
         commission.grantRole(commission.TRANSACTION_ROLE(), address(this));
 
         vm.prank(PAYER);
